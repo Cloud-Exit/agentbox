@@ -2,8 +2,9 @@
 # Network management - Firewalling and Connectivity
 # ============================================================================
 
-# Network name for agentbox
-readonly AGENTBOX_NETWORK="agentbox-net"
+# Network names for agentbox
+readonly AGENTBOX_INTERNAL_NETWORK="agentbox-int"
+readonly AGENTBOX_EGRESS_NETWORK="agentbox-egress"
 readonly AGENTBOX_SQUID_CONTAINER="agentbox-squid"
 
 # Get the allowlist file path
@@ -21,55 +22,104 @@ get_allowlist_path() {
     fi
 }
 
-# Extract root domain (TLD+1) from a domain
-extract_root_domain() {
-    local domain="$1"
-    
-    # Strip protocol and path
-    domain="${domain#*://}"
-    domain="${domain%%/*}"
-    # Strip port
-    domain="${domain%%:*}"
+# Normalize an allowlist entry for Squid dstdomain ACL matching.
+# Supported input:
+# - host/IP: example.com, api.example.com, 1.2.3.4, 2606:4700:4700::1111
+# - wildcard subdomains: *.example.com (same as example.com in Squid ACL terms)
+# - optional protocol/path/port are stripped
+normalize_allowlist_entry() {
+    local value="$1"
 
-    # If IP, return as is
-    if [[ "$domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        printf '%s' "$domain"
+    # Trim whitespace
+    value=$(printf '%s' "$value" | xargs)
+    [[ -z "$value" ]] && return 1
+
+    # Strip protocol and path
+    value="${value#*://}"
+    value="${value%%/*}"
+
+    if [[ "$value" == \*.* ]]; then
+        value="${value#*.}"
+    elif [[ "$value" == .* ]]; then
+        value="${value#.}"
+    fi
+
+    # Accept bracketed IPv6 literals like [2001:db8::1] or [2001:db8::1]:443
+    if [[ "$value" =~ ^\[([0-9A-Fa-f:]+)\](:[0-9]+)?$ ]]; then
+        value="${BASH_REMATCH[1]}"
+    fi
+
+    # Strip trailing DNS dot from hostnames.
+    value="${value%.}"
+
+    # Detect IPv6 literals (simple form check).
+    local is_ipv6=false
+    if [[ "$value" =~ : ]] && [[ "$value" =~ ^[0-9A-Fa-f:]+$ ]]; then
+        is_ipv6=true
+    fi
+
+    # Strip port from hostnames only.
+    if [[ "$value" =~ : ]] && [[ ! "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$is_ipv6" != "true" ]]; then
+        value="${value%%:*}"
+    fi
+
+    # Basic validation for hostname or IPv4
+    if [[ "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        printf '%s' "$value"
         return 0
     fi
 
-    # Handle known multi-part TLDs (naive list)
-    # This prevents "google.co.uk" becoming just "co.uk"
-    if [[ "$domain" =~ \.(co\.uk|com\.au|co\.jp|gov\.uk|ac\.uk|org\.uk|net\.au|org\.au)$ ]]; then
-         # Extract last 3 parts
-         local IFS='.'
-         read -r -a parts <<< "$domain"
-         local count="${#parts[@]}"
-         if (( count >= 3 )); then
-             printf '%s.%s.%s' "${parts[$((count - 3))]}" "${parts[$((count - 2))]}" "${parts[$((count - 1))]}"
-             return 0
-         fi
+    if [[ "$is_ipv6" == "true" ]]; then
+        printf '%s' "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+        return 0
     fi
 
-    # Default: TLD+1
-    local IFS='.'
-    read -r -a parts <<< "$domain"
-    local count="${#parts[@]}"
-    
-    if (( count <= 2 )); then
-        printf '%s' "$domain"
-    else
-        printf '%s.%s' "${parts[$((count - 2))]}" "${parts[$((count - 1))]}"
+    if [[ ! "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]]; then
+        return 1
     fi
+
+    value=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+
+    # Squid dstdomain with leading dot matches both host and subdomains.
+    # We avoid root-domain collapsing and only match the caller-provided host scope.
+    printf '.%s' "$value"
 }
 
-# Get the subnet for the agentbox network
+# Get the subnet for a network
 get_network_subnet() {
+    local network_name="${1:-$AGENTBOX_INTERNAL_NETWORK}"
     local cmd
+    local inspect_json=""
+    local subnet=""
     cmd=$(container_cmd)
-    # Ensure network exists first
-    ensure_network
-    # Get IPv4 subnet
-    $cmd network inspect "$AGENTBOX_NETWORK" --format '{{range .IPAM.Config}}{{if .Subnet}}{{.Subnet}}{{end}}{{end}}' | head -n 1
+
+    # Ensure networks exist first, but keep informational logs out of stdout
+    # because callers capture this function output as the subnet value.
+    ensure_networks >/dev/null
+
+    if ! inspect_json=$($cmd network inspect "$network_name" 2>/dev/null); then
+        return 1
+    fi
+
+    # Prefer structured parsing when jq is available.
+    if command -v jq >/dev/null 2>&1; then
+        subnet=$(printf '%s' "$inspect_json" | jq -r '.[0] | (.IPAM.Config[]?.Subnet), (.subnets[]?.subnet)' 2>/dev/null | head -n 1)
+    fi
+
+    # Fallback parser for environments without jq.
+    if [[ -z "$subnet" ]]; then
+        subnet=$(printf '%s\n' "$inspect_json" | sed -nE 's/.*"Subnet"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)
+    fi
+    if [[ -z "$subnet" ]]; then
+        subnet=$(printf '%s\n' "$inspect_json" | sed -nE 's/.*"subnet"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)
+    fi
+
+    if [[ -n "$subnet" ]]; then
+        printf '%s\n' "$subnet"
+        return 0
+    fi
+
+    return 1
 }
 
 # Generate Squid configuration
@@ -79,14 +129,13 @@ generate_squid_config() {
     local config_file="$AGENTBOX_CACHE/squid.conf"
     
     # Get network subnet for locking down access
-    # local subnet
-    # subnet=$(get_network_subnet)
-    
-    # if [[ -z "$subnet" ]]; then
-    #     # Fallback if subnet detection fails (shouldn't happen if network exists)
-    #     subnet="0.0.0.0/0" 
-    #     warn "Could not detect agentbox network subnet. Squid access will be open to all containers."
-    # fi
+    local internal_subnet
+    if ! internal_subnet=$(get_network_subnet "$AGENTBOX_INTERNAL_NETWORK"); then
+        error "Could not detect internal network subnet for firewall enforcement."
+    fi
+    if [[ -z "$internal_subnet" ]]; then
+        error "Could not detect internal network subnet for firewall enforcement."
+    fi
 
     mkdir -p "$(dirname "$config_file")"
 
@@ -116,14 +165,15 @@ http_access deny CONNECT !SSL_ports
 # Localhost access
 acl localhost src 127.0.0.1/32
 
-# Allow all sources (security is handled by network isolation)
-acl all_sources src all
+# Only allow proxy clients from the internal agent network
+acl agent_sources src ${internal_subnet}
 
 # Allowlist
 EOF
 
     if [[ -n "$allowlist_path" ]] && [[ -f "$allowlist_path" ]]; then
         local added_domains=""
+        local allowlist_entry_count=0
         
         # Process allowlist
         while IFS= read -r line; do
@@ -134,29 +184,31 @@ EOF
 
             local domain
             domain=$(printf '%s' "$line" | xargs) # Trim
-            
+
             if [[ -n "$domain" ]]; then
-                local root_domain
-                root_domain=$(extract_root_domain "$domain")
-                
-                # Deduplicate
-                if [[ " $added_domains " == *" $root_domain "* ]]; then
+                local normalized_domain
+                if ! normalized_domain=$(normalize_allowlist_entry "$domain"); then
+                    warn "Skipping invalid allowlist entry: $domain"
                     continue
                 fi
-                added_domains="$added_domains $root_domain"
-                
-                # Add dot for subdomain matching (Squid dstdomain)
-                # If it's an IP, don't add dot.
-                if [[ ! "$root_domain" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                     root_domain=".$root_domain"
+
+                # Deduplicate
+                if [[ " $added_domains " == *" $normalized_domain "* ]]; then
+                    continue
                 fi
-                
-                printf 'acl allowed_domains dstdomain %s\n' "$root_domain" >> "$config_file"
+                added_domains="$added_domains $normalized_domain"
+                printf 'acl allowed_domains dstdomain %s\n' "$normalized_domain" >> "$config_file"
+                ((allowlist_entry_count++))
             fi
         done < "$allowlist_path"
+
+        if (( allowlist_entry_count == 0 )); then
+            warn "Allowlist is empty or invalid. Blocking all outbound destinations."
+            printf 'acl allowed_domains dstdomain .__agentbox_block_all__.invalid\n' >> "$config_file"
+        fi
     else
-        # If no allowlist, allow everything
-        printf 'acl allowed_domains src 0.0.0.0/0\n' >> "$config_file"
+        warn "Allowlist file not found. Blocking all outbound destinations."
+        printf 'acl allowed_domains dstdomain .__agentbox_block_all__.invalid\n' >> "$config_file"
     fi
 
     cat >> "$config_file" << 'EOF'
@@ -164,7 +216,7 @@ EOF
 # Enforce Access Control
 # Only allow access from localhost and our network
 http_access allow localhost
-http_access allow all_sources allowed_domains
+http_access allow agent_sources allowed_domains
 
 # Deny everything else
 http_access deny all
@@ -177,15 +229,25 @@ EOF
     echo "$config_file"
 }
 
-# Ensure the shared network exists
-ensure_network() {
+# Ensure the shared networks exist
+ensure_networks() {
     local cmd
     cmd=$(container_cmd)
     
-    if ! $cmd network ls --format '{{.Name}}' | grep -q "^${AGENTBOX_NETWORK}$"; then
-        info "Creating network $AGENTBOX_NETWORK..."
-        $cmd network create "$AGENTBOX_NETWORK" >/dev/null
+    if ! $cmd network ls --format '{{.Name}}' | grep -q "^${AGENTBOX_INTERNAL_NETWORK}$"; then
+        info "Creating internal network $AGENTBOX_INTERNAL_NETWORK..."
+        $cmd network create --internal "$AGENTBOX_INTERNAL_NETWORK" >/dev/null
     fi
+
+    if ! $cmd network ls --format '{{.Name}}' | grep -q "^${AGENTBOX_EGRESS_NETWORK}$"; then
+        info "Creating egress network $AGENTBOX_EGRESS_NETWORK..."
+        $cmd network create "$AGENTBOX_EGRESS_NETWORK" >/dev/null
+    fi
+}
+
+# Backward compatibility
+ensure_network() {
+    ensure_networks
 }
 
 # Start the Squid proxy container
@@ -201,28 +263,41 @@ start_squid_proxy() {
     # Remove if stopped
     $cmd rm -f "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1 || true
 
-    # Ensure network exists first (needed for subnet detection)
-    ensure_network
+    # Ensure networks exist first (needed for subnet detection)
+    ensure_networks
 
     # Build image if needed
     build_squid_image
 
     # Generate config
     local config_file
-    config_file=$(generate_squid_config)
+    if ! config_file=$(generate_squid_config); then
+        error "Failed to generate Squid configuration."
+    fi
+    if [[ -z "$config_file" ]] || [[ ! -f "$config_file" ]]; then
+        error "Generated Squid configuration path is invalid."
+    fi
     
     info "Starting Squid proxy..."
-    $cmd run -d \
+    if ! $cmd run -d \
         --name "$AGENTBOX_SQUID_CONTAINER" \
-        --network "$AGENTBOX_NETWORK" \
+        --network "$AGENTBOX_EGRESS_NETWORK" \
         -v "$config_file":/etc/squid/squid.conf:ro \
         --restart=unless-stopped \
-        agentbox-squid >/dev/null
+        agentbox-squid >/dev/null; then
+        error "Failed to start Squid proxy container."
+    fi
+
+    # Connect Squid to the internal network used by agent containers.
+    if ! $cmd network connect "$AGENTBOX_INTERNAL_NETWORK" "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1; then
+        $cmd rm -f "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1 || true
+        error "Failed to connect Squid to internal network."
+    fi
 
     # Wait briefly for IP allocation
     local retries=10
     while [[ $retries -gt 0 ]]; do
-        if $cmd inspect "$AGENTBOX_SQUID_CONTAINER" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null | grep -q .; then
+        if $cmd inspect "$AGENTBOX_SQUID_CONTAINER" --format "{{with index .NetworkSettings.Networks \"$AGENTBOX_INTERNAL_NETWORK\"}}{{.IPAddress}}{{end}}" 2>/dev/null | grep -q .; then
              break
         fi
         sleep 0.1
@@ -244,7 +319,7 @@ get_proxy_env_vars() {
     
     # Try to get IP address of squid container on agentbox network
     local squid_ip
-    squid_ip=$($cmd inspect "$AGENTBOX_SQUID_CONTAINER" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null | head -1)
+    squid_ip=$($cmd inspect "$AGENTBOX_SQUID_CONTAINER" --format "{{with index .NetworkSettings.Networks \"$AGENTBOX_INTERNAL_NETWORK\"}}{{.IPAddress}}{{end}}" 2>/dev/null | head -1)
 
     if [[ -n "$squid_ip" ]]; then
         proxy_host="$squid_ip"
@@ -256,9 +331,9 @@ get_proxy_env_vars() {
     printf -- '-e https_proxy=%s ' "$proxy_url"
     printf -- '-e HTTP_PROXY=%s ' "$proxy_url"
     printf -- '-e HTTPS_PROXY=%s ' "$proxy_url"
-    # Important: No_proxy for local network and internal docker stuff
-    printf -- '-e no_proxy=localhost,127.0.0.1,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 '
-    printf -- '-e NO_PROXY=localhost,127.0.0.1,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 '
+    # Keep local loopback out of proxy routing.
+    printf -- '-e no_proxy=localhost,127.0.0.1,.local '
+    printf -- '-e NO_PROXY=localhost,127.0.0.1,.local '
 }
 
-export -f ensure_network start_squid_proxy get_proxy_env_vars generate_squid_config extract_root_domain get_network_subnet
+export -f ensure_network ensure_networks start_squid_proxy get_proxy_env_vars generate_squid_config normalize_allowlist_entry get_network_subnet

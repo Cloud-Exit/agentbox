@@ -74,6 +74,7 @@ _cmd_agent_list() {
     printf '  agentbox enable <agent>     Enable an agent\n'
     printf '  agentbox disable <agent>    Disable an agent\n'
     printf '  agentbox rebuild <agent>    Force rebuild of agent image\n'
+    printf '  agentbox uninstall [agent]  Uninstall agentbox or specific agent\n'
     printf '  agentbox aliases            Print shell aliases\n'
     printf '\n'
 }
@@ -122,7 +123,56 @@ _cmd_agent_uninstall() {
     local agent="${1:-}"
 
     if [[ -z "$agent" ]]; then
-        error "Usage: agentbox uninstall <agent>"
+        printf 'This will UNINSTALL AGENTBOX COMPLETELY.\n'
+        printf 'Actions:\n'
+        printf '  - Stop and remove all agentbox containers\n'
+        printf '  - Remove all agentbox images\n'
+        printf '  - Disable all agents\n'
+        printf '  - Remove all agent configurations\n'
+        printf '\n'
+        printf 'Are you sure? [y/N] '
+        local response
+        read -r response
+
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            info "Cancelled"
+            return 0
+        fi
+
+        local cmd
+        cmd=$(container_cmd)
+
+        # Stop and remove all containers
+        info "Stopping and removing all agentbox containers..."
+        $cmd ps -a --filter "name=agentbox-*" --format "{{.ID}}" | \
+            xargs -r $cmd rm -f >/dev/null 2>&1 || true
+
+        # Remove all images
+        info "Removing all agentbox images..."
+        clean_container_resources "all"
+
+        # Process each agent
+        local a
+        for a in "${AGENTBOX_AGENTS[@]}"; do
+            # Disable agent
+            disable_agent "$a" 2>/dev/null || true
+            
+            # Remove config directory
+            local config_dir
+            config_dir=$(get_agent_config_dir "$a")
+            if [[ -d "$config_dir" ]]; then
+                info "Removing config for $a..."
+                rm -rf "$config_dir"
+            fi
+        done
+        
+        # Remove cache
+        if [[ -d "${AGENTBOX_CACHE:-}" ]]; then
+             rm -rf "$AGENTBOX_CACHE"
+        fi
+
+        success "AgentBox uninstalled successfully."
+        return 0
     fi
 
     # Validate agent name

@@ -192,9 +192,9 @@ Management Commands:
   list               List available agents
   enable <agent>     Enable an agent
   disable <agent>    Disable an agent
-  rebuild <agent>    Force rebuild of agent image
-  uninstall <agent>  Remove agent images and config
-  aliases            Print shell aliases
+  rebuild <agent>     Force rebuild of agent image
+  uninstall [agent]   Uninstall agentbox or specific agent
+  aliases             Print shell aliases
 
 Utility Commands:
   logs <agent>      Show latest agent log file

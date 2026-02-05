@@ -2,6 +2,40 @@
 # Runtime management - Running containers
 # ============================================================================
 
+# Count running agent containers (excluding squid proxy).
+count_running_agent_containers() {
+    local cmd
+    cmd=$(container_cmd)
+
+    local count=0
+    local name
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        [[ "$name" == "$AGENTBOX_SQUID_CONTAINER" ]] && continue
+        if [[ "$name" == agentbox-* ]]; then
+            ((count++))
+        fi
+    done < <($cmd ps --format '{{.Names}}' 2>/dev/null || true)
+
+    printf '%s' "$count"
+}
+
+# Stop/remove squid proxy if no agent containers are running.
+cleanup_squid_if_unused() {
+    local cmd
+    cmd=$(container_cmd)
+
+    local running_agents_count
+    running_agents_count=$(count_running_agent_containers)
+
+    if [[ "$running_agents_count" == "0" ]]; then
+        if $cmd ps --filter "name=^/${AGENTBOX_SQUID_CONTAINER}$" --format '{{.Names}}' | grep -q "^${AGENTBOX_SQUID_CONTAINER}$"; then
+            info "Stopping Squid proxy (no running agents)..."
+            $cmd rm -f "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
 # Run an agent container
 # Usage: run_agent_container <agent> <container_name> <mode> [args...]
 run_agent_container() {
@@ -45,9 +79,9 @@ run_agent_container() {
         run_args+=("--security-opt=no-new-privileges")
     fi
 
-    # Network Setup
-    ensure_network
-    run_args+=("--network" "$AGENTBOX_NETWORK")
+    # Network Setup: agents are attached only to the internal network.
+    ensure_networks
+    run_args+=("--network" "$AGENTBOX_INTERNAL_NETWORK")
     
     # Firewall / Proxy Setup
     if [[ "${AGENTBOX_NO_FIREWALL:-false}" != "true" ]]; then
@@ -257,23 +291,15 @@ run_agent_container() {
         printf '[DEBUG] Container run: %s run %s\n' "$cmd" "${run_args[*]}" >&2
     fi
 
+    # Always capture container exit code and continue to proxy cleanup even
+    # when the agent exits non-zero (e.g., SIGINT/SIGTERM/user abort).
+    local exit_code=0
+    set +e
     $cmd run "${run_args[@]}"
-    local exit_code=$?
+    exit_code=$?
+    set -e
 
-    # Cleanup Squid if this was the last agent
-    # Filter for agentbox containers (excluding squid)
-    # We use agentbox- prefix for all agent containers
-    local other_agents
-    other_agents=$($cmd ps --format '{{.Names}}' | grep "agentbox-" | grep -v "agentbox-squid")
-
-    if [[ -z "$other_agents" ]]; then
-        # No other agents running
-        if $cmd ps --filter "name=^/${AGENTBOX_SQUID_CONTAINER}$" --format '{{.Names}}' | grep -q "^${AGENTBOX_SQUID_CONTAINER}$"; then
-             info "Stopping Squid proxy (last agent exited)..."
-             $cmd stop "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1 || true
-             $cmd rm "$AGENTBOX_SQUID_CONTAINER" >/dev/null 2>&1 || true
-        fi
-    fi
+    cleanup_squid_if_unused
 
     return $exit_code
 }
@@ -325,6 +351,7 @@ clean_container_resources() {
             info "Stopping all agentbox containers..."
             $cmd ps --filter "name=agentbox-*" --format "{{.ID}}" | \
                 xargs -r $cmd stop 2>/dev/null || true
+            cleanup_squid_if_unused
             ;;
     esac
 }
@@ -335,4 +362,5 @@ clean_docker_resources() {
 }
 
 
+export -f count_running_agent_containers cleanup_squid_if_unused
 export -f run_agent_container check_container_exists clean_container_resources clean_docker_resources

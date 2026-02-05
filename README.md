@@ -18,10 +18,19 @@ Run AI coding assistants (Claude, Codex, OpenCode) in isolated containers.
 ## Features
 
 ### Security
+
+The project's security posture is rated **High / Robust**, employing a "Defense in Depth" strategy verified by active testing:
+
+1.  **DNS Isolation (The "Moat")**: Containers cannot resolve external domain names directly. This forces all traffic through the proxy, as the container "knows" nothing of the outside internet.
+2.  **Mandatory Proxy Usage**: Since direct DNS fails, tools are forced to use the configured `http_proxy`. Bypassing these variables results in immediate connection failure.
+3.  **Proxy Access Control**: The Squid proxy actively inspects destinations, enforcing a strict allow/deny policy (returning `403 Forbidden` for blocked domains).
+4.  **Capability Restrictions**: `CAP_NET_RAW` and other capabilities are dropped, preventing raw socket creation and network enumeration attacks (e.g., `ping` is disabled).
+
+**Core Features:**
 - **Rootless Containers**: Runs without host root privileges using Podman's user namespaces
 - **Minimal Base Image**: Built on Debian Slim with only essential packages
-- **Squid Proxy Firewall**: Reliable, TLD-based domain allowlisting (replaces flaky IP filtering)
-- **Network Allowlist**: Only explicitly permitted root domains (and their subdomains) are reachable
+- **Squid Proxy Firewall**: Proxy-based destination filtering with explicit allowlist rules
+- **Hard Egress Isolation**: Agent containers run on an internal-only network and can exit only via Squid
 - **No Privilege Escalation**: `--security-opt=no-new-privileges:true` enforced
 - **Capability Dropping**: `--cap-drop=ALL` removes all Linux capabilities
 - **Resource Limits**: Default 8GB RAM / 4 CPUs to prevent DoS
@@ -240,19 +249,26 @@ Your project directory is mounted at `/workspace`.
 
 ## Network Firewall
 
-AgentBox uses a **Squid Proxy** container to enforce strict domain allowlisting:
+AgentBox uses a **Squid Proxy** container to enforce strict destination allowlisting:
 
-1. **Proxy**: All HTTP/HTTPS traffic is routed through a local Squid instance.
-2. **Allowlist**: Only domains listed in `allowlist.txt` (and their subdomains) are permitted.
-3. **Reliability**: Works regardless of cloud IP changes (unlike iptables).
+1. **Hard egress control**: Agent containers run on an internal-only network with no direct internet route.
+2. **Proxy path**: Squid is dual-homed (internal + egress networks), so outbound traffic must traverse Squid.
+3. **Allowlist**: Only destinations listed in `allowlist.txt` are permitted through the proxy.
+4. **Fail closed**: Missing or empty allowlist blocks all outbound destinations.
 
 ### Configuring the Allowlist
 
 Edit `~/.config/agentbox/allowlist.txt` or the default at `config/allowlist.txt`.
-Add root domains only (e.g., `google.com` allows `api.google.com`).
+Add explicit hosts or wildcard domains:
+
+- `example.com` allows `example.com` and its subdomains.
+- `api.example.com` allows only that host scope (and deeper subdomains).
+- `*.example.com` is accepted as wildcard syntax.
+- `8.8.8.8` allows a specific IPv4 destination.
+- `2606:4700:4700::1111` allows a specific IPv6 destination.
 
 ```bash
-# Add a custom root domain
+# Add a custom destination
 echo "mycompany.com" >> ~/.config/agentbox/allowlist.txt
 ```
 
