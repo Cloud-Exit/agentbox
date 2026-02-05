@@ -1,0 +1,47 @@
+#!/bin/sh
+# ==============================================================================
+# Agentbox Docker Entrypoint (OpenCode, POSIX sh)
+# Runs firewall setup, then executes agent without requiring bash
+# ==============================================================================
+
+set -e
+
+WORKSPACE="/workspace"
+
+# Ensure HOME is set correctly
+if [ -z "${HOME:-}" ]; then
+    HOME="/home/user"
+    export HOME
+fi
+
+# Agent detection
+AGENT="${AGENTBOX_AGENT:-}"
+if [ -z "$AGENT" ]; then
+    if command -v opencode >/dev/null 2>&1; then
+        AGENT="opencode"
+    fi
+fi
+
+# Run agent
+cd "$WORKSPACE" 2>/dev/null || true
+
+if [ "$#" -gt 0 ]; then
+    case "$1" in
+        opencode)
+            exec "$@"
+            ;;
+        *)
+            if [ -n "$AGENT" ]; then
+                exec "$AGENT" "$@"
+            else
+                exec "$@"
+            fi
+            ;;
+    esac
+else
+    if [ -n "$AGENT" ]; then
+        exec "$AGENT"
+    else
+        exec sh
+    fi
+fi

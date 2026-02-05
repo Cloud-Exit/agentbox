@@ -1,0 +1,129 @@
+# syntax=docker/dockerfile:1
+# ==============================================================================
+# AgentBox Base Image (Debian Slim + Rootless + iptables)
+# Minimal, security-focused base with working firewall
+# ==============================================================================
+
+FROM debian:bookworm-slim
+
+# Build arguments
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG USERNAME=user
+ARG DELTA_VERSION=0.18.2
+ARG TARGETARCH=x86_64
+ARG AGENTBOX_VERSION=3.1.0
+
+# Environment variables
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    HOME=/home/${USERNAME} \
+    PATH="/home/${USERNAME}/.local/bin:/usr/local/bin:${PATH}" \
+    DEBIAN_FRONTEND=noninteractive
+
+# Install base packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Essential tools
+    ca-certificates \
+    curl \
+    wget \
+    git \
+    openssh-client \
+    bash \
+    # Editors
+    vim-tiny \
+    nano \
+    # Data processing
+    jq \
+    # Search tools
+    ripgrep \
+    fd-find \
+    fzf \
+    # File utilities
+    tree \
+    file \
+    less \
+    bat \
+    # Process utilities
+    procps \
+    htop \
+    # Archive tools
+    zip \
+    unzip \
+    xz-utils \
+    tar \
+    gzip \
+    bzip2 \
+    # Build essentials (for compiling)
+    make \
+    patch \
+    diffutils \
+    # Text processing
+    sed \
+    gawk \
+    gettext-base \
+    # Networking
+    dnsutils \
+    netcat-openbsd \
+    # Terminal
+    tmux \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install yq (not in Debian repos)
+RUN curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq \
+    && chmod +x /usr/local/bin/yq
+
+# Create symlinks for tools with different names
+RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
+    ln -sf /usr/bin/batcat /usr/local/bin/bat
+
+# Install git-delta for better diffs
+RUN mkdir -p /usr/local/bin && \
+    if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
+        DELTA_ARCH="x86_64-unknown-linux-gnu"; \
+    elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
+        DELTA_ARCH="aarch64-unknown-linux-gnu"; \
+    else \
+        DELTA_ARCH="x86_64-unknown-linux-gnu"; \
+    fi && \
+    wget -q -O /tmp/delta.tar.gz "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${DELTA_ARCH}.tar.gz" && \
+    tar -xzf /tmp/delta.tar.gz -C /tmp && \
+    mv /tmp/delta-*/delta /usr/local/bin/ && \
+    rm -rf /tmp/delta*
+
+# Create non-root user
+RUN groupadd -g ${GROUP_ID} ${USERNAME} && \
+    useradd -m -u ${USER_ID} -g ${USERNAME} -s /bin/bash ${USERNAME} && \
+    mkdir -p /home/${USERNAME}/.local/bin && \
+    mkdir -p /home/${USERNAME}/.config && \
+    mkdir -p /home/${USERNAME}/.cache && \
+    chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
+
+# Set up workspace
+RUN mkdir -p /workspace && chown ${USERNAME}:${USERNAME} /workspace
+
+# Copy entrypoint
+COPY docker-entrypoint /usr/local/bin/docker-entrypoint
+RUN chmod +x /usr/local/bin/docker-entrypoint
+
+# Stay as root for entrypoint (drops to user after setup)
+WORKDIR /workspace
+
+# Configure git for user
+RUN git config --global core.pager "delta --dark" && \
+    git config --global interactive.diffFilter "delta --color-only" && \
+    git config --global delta.navigate true && \
+    git config --global delta.light false && \
+    git config --global delta.side-by-side true && \
+    git config --global merge.conflictstyle diff3 && \
+    git config --global diff.colorMoved default && \
+    git config --global init.defaultBranch main && \
+    git config --global core.editor vim
+
+# Labels
+LABEL agentbox.type="base"
+LABEL agentbox.version="${AGENTBOX_VERSION}"
+LABEL agentbox.rootless="true"
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint"]

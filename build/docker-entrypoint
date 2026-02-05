@@ -1,0 +1,61 @@
+#!/bin/bash
+# ==============================================================================
+# Agentbox Docker Entrypoint
+# Runs firewall setup, then executes agent
+# ==============================================================================
+
+set -e
+
+WORKSPACE="/workspace"
+
+# ============================================================================
+# AGENT DETECTION
+# ============================================================================
+
+AGENT="${AGENTBOX_AGENT:-}"
+
+if [[ -z "$AGENT" ]]; then
+    if command -v claude >/dev/null 2>&1; then
+        AGENT="claude"
+    elif command -v codex >/dev/null 2>&1; then
+        AGENT="codex"
+    elif command -v opencode >/dev/null 2>&1; then
+        AGENT="opencode"
+    fi
+fi
+
+# ============================================================================
+# RUN AGENT
+# ============================================================================
+
+cd "$WORKSPACE"
+
+# Debug: show what's available
+if [[ "${VERBOSE:-false}" == "true" ]]; then
+    echo "[DEBUG] PATH=$PATH" >&2
+    echo "[DEBUG] HOME=$HOME" >&2
+    echo "[DEBUG] AGENT=$AGENT" >&2
+    ls -la /home/user/.local/bin/ >&2 2>/dev/null || echo "[DEBUG] .local/bin not found" >&2
+    which claude >&2 2>/dev/null || echo "[DEBUG] claude not in PATH" >&2
+fi
+
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        claude|codex|opencode)
+            exec "$@"
+            ;;
+        *)
+            if [[ -n "$AGENT" ]]; then
+                exec "$AGENT" "$@"
+            else
+                exec "$@"
+            fi
+            ;;
+    esac
+else
+    if [[ -n "$AGENT" ]]; then
+        exec "$AGENT"
+    else
+        exec bash
+    fi
+fi

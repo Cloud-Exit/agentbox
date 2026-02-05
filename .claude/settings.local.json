@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(podman ps:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}
