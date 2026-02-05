@@ -229,10 +229,13 @@ get_agent_project_image() {
 }
 
 # Get the container name for an agent in a project
+# Appends a short random suffix to allow multiple parallel instances
 get_agent_container_name() {
     local agent="$1"
     local project_hash="$2"
-    printf 'agentbox-%s-%s' "$agent" "$project_hash"
+    local suffix
+    suffix=$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    printf 'agentbox-%s-%s-%s' "$agent" "$project_hash" "$suffix"
 }
 
 # ============================================================================

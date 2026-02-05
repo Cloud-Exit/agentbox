@@ -93,8 +93,11 @@ RUN mkdir -p /usr/local/bin && \
     rm -rf /tmp/delta*
 
 # Create non-root user
-RUN groupadd -g ${GROUP_ID} ${USERNAME} && \
-    useradd -m -u ${USER_ID} -g ${USERNAME} -s /bin/bash ${USERNAME} && \
+# Use -f flag for groupadd to handle pre-existing GIDs gracefully (e.g. macOS
+# where id -g returns 20 which conflicts with the 'dialout' group in Debian).
+# Use numeric GID for useradd so it works regardless of group name.
+RUN groupadd -f -g ${GROUP_ID} ${USERNAME} && \
+    useradd -m -u ${USER_ID} -g ${GROUP_ID} -s /bin/bash ${USERNAME} && \
     mkdir -p /home/${USERNAME}/.local/bin && \
     mkdir -p /home/${USERNAME}/.config && \
     mkdir -p /home/${USERNAME}/.cache && \

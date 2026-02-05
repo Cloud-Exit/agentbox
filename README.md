@@ -61,15 +61,16 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 
 ### Prerequisites
 
-- **Podman** (recommended) or Docker
+- **Podman** (recommended) or **Docker** - you need at least one; Podman is preferred for its rootless, daemonless design but Docker works too
 - Bash 3.2+
 - Git
 
 ### Linux
 
 ```bash
-# Install Podman (Ubuntu/Debian)
-sudo apt update && sudo apt install -y podman
+# Install Podman (recommended) or Docker
+sudo apt update && sudo apt install -y podman   # Ubuntu/Debian
+# OR: install Docker - see https://docs.docker.com/engine/install/
 
 # Clone and install agentbox
 git clone https://github.com/Cloud-Exit/agentbox.git ~/.agentbox
@@ -80,7 +81,7 @@ mkdir -p ~/.local/bin
 ln -sf ~/.agentbox/main.sh ~/.local/bin/agentbox
 
 # Append shell aliases (e.g., 'claude' -> 'agentbox claude')
-agentbox aliases >> ~/.bashrc
+~/.agentbox/main.sh aliases >> ~/.bashrc
 source ~/.bashrc
 
 # Run an agent (builds image on first run)
@@ -90,16 +91,17 @@ agentbox claude
 ### macOS
 
 ```bash
-# Install Podman
+# Install Podman (recommended) or Docker
 brew install podman
 podman machine init && podman machine start
+# OR: brew install --cask docker
 
 # Clone and install
 git clone https://github.com/Cloud-Exit/agentbox.git ~/.agentbox
 cd ~/.agentbox && chmod +x main.sh
 mkdir -p ~/.local/bin
 ln -sf ~/.agentbox/main.sh ~/.local/bin/agentbox
-agentbox aliases >> ~/.zshrc
+~/.agentbox/main.sh aliases >> ~/.zshrc
 source ~/.zshrc
 ```
 
@@ -112,12 +114,12 @@ wsl --install -d Ubuntu
 
 Then in WSL2:
 ```bash
-sudo apt update && sudo apt install -y podman
+sudo apt update && sudo apt install -y podman  # or install Docker
 git clone https://github.com/Cloud-Exit/agentbox.git ~/.agentbox
 cd ~/.agentbox && chmod +x main.sh
 mkdir -p ~/.local/bin
 ln -sf ~/.agentbox/main.sh ~/.local/bin/agentbox
-agentbox aliases >> ~/.bashrc
+~/.agentbox/main.sh aliases >> ~/.bashrc
 source ~/.bashrc
 ```
 
@@ -299,6 +301,15 @@ podman system migrate
 
 ```bash
 podman machine start
+```
+
+### macOS: "GID already exists" during build
+
+This was a known issue where macOS's default GID (20, the `staff` group) conflicted with an existing group in the Debian container. It has been fixed. If you see this error, pull the latest version:
+
+```bash
+cd ~/.agentbox && git pull
+agentbox rebuild claude
 ```
 
 ### Docker: Permission Denied

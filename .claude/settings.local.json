@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(podman ps:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)"
     ]
   }
 }
