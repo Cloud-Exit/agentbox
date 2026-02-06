@@ -175,7 +175,7 @@ main() {
             build_agent_project_image "$agent"
 
             # Run the agent
-            _cmd_agent_run "$agent" "${CLI_PASSTHROUGH[@]:-}"
+            _cmd_agent_run "$agent" "${CLI_PASSTHROUGH[@]}"
         fi
 
         exit $?
