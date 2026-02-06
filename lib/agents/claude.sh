@@ -55,6 +55,12 @@ USER user
 RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh && \
     bash /tmp/claude-install.sh && \
     rm -f /tmp/claude-install.sh && \
+    if [ -d "$HOME/.local/share/claude/versions" ]; then \
+        latest="$(ls -1d "$HOME/.local/share/claude/versions/"* | sort -V | tail -1)"; \
+        if [ -x "$latest/bin/claude" ]; then \
+            ln -sf "$latest/bin/claude" "$HOME/.local/bin/claude"; \
+        fi; \
+    fi && \
     command -v claude >/dev/null
 USER root
 EOF
