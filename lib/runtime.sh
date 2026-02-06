@@ -296,9 +296,11 @@ run_agent_container() {
                 claude_json_src=$(resolve_file_mount_source "$HOME/.claude.json" "$agent_config_dir/.claude.json" "$use_managed_mounts")
                 run_args+=(-v "$claude_json_src":/home/user/.claude.json)
 
-                local claude_share_dir
-                claude_share_dir=$(resolve_dir_mount_source "$HOME/.local/share/claude" "$agent_config_dir/.local/share/claude" "$use_managed_mounts")
-                run_args+=(-v "$claude_share_dir":/home/user/.local/share/claude)
+                # On non-Linux hosts, do not mount Claude's share dir. It can mask
+                # the image-installed CLI and break PATH resolution.
+                if [[ "${VERBOSE:-false}" == "true" ]]; then
+                    warn "Skipping Claude share mount on non-Linux host."
+                fi
             else
                 # Linux behavior: keep native host mounts unchanged.
                 if [[ -d "$HOME/.claude" ]]; then
