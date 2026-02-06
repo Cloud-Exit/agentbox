@@ -308,17 +308,17 @@ _cmd_agent_run() {
     if [[ "$agent" == "opencode" ]] && [[ "${VERBOSE:-false}" == "true" ]]; then
         local has_log_level=false
         local arg
-        for arg in "${passthrough[@]}"; do
+        for arg in "${passthrough[@]+"${passthrough[@]}"}"; do
             if [[ "$arg" == "--log-level" ]] || [[ "$arg" == "--log-level="* ]]; then
                 has_log_level=true
                 break
             fi
         done
         if [[ "$has_log_level" == "false" ]]; then
-            passthrough=(--log-level DEBUG "${passthrough[@]}")
+            passthrough=(--log-level DEBUG "${passthrough[@]+"${passthrough[@]}"}")
         fi
     fi
-    run_agent_container "$agent" "$container_name" "interactive" "${passthrough[@]}"
+    run_agent_container "$agent" "$container_name" "interactive" "${passthrough[@]+"${passthrough[@]}"}"
 }
 
 # ============================================================================

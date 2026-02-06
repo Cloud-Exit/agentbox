@@ -44,6 +44,12 @@ if [[ -z "$AGENT" ]]; then
     fi
 fi
 
+if [[ -n "$AGENT" ]] && ! command -v "$AGENT" >/dev/null 2>&1; then
+    echo "[ERROR] Agent '$AGENT' not found on PATH. The install likely failed during image build." >&2
+    echo "[ERROR] Rebuild the agent image and check installer output." >&2
+    exit 127
+fi
+
 # ============================================================================
 # RUN AGENT
 # ============================================================================

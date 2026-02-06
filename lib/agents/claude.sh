@@ -52,7 +52,10 @@ claude_get_dockerfile_install() {
     cat << 'EOF'
 # Install Claude Code using official installer (as user so it goes to correct path)
 USER user
-RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh && \
+    bash /tmp/claude-install.sh && \
+    rm -f /tmp/claude-install.sh && \
+    command -v claude >/dev/null
 USER root
 EOF
 }
