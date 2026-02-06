@@ -127,6 +127,7 @@ generate_squid_config() {
     local allowlist_path
     allowlist_path=$(get_allowlist_path)
     local config_file="$AGENTBOX_CACHE/squid.conf"
+    local squid_dns_servers
     
     # Get network subnet for locking down access
     local internal_subnet
@@ -226,6 +227,12 @@ forwarded_for off
 via off
 EOF
 
+    squid_dns_servers=$(get_squid_dns_servers)
+    if [[ -n "$squid_dns_servers" ]]; then
+        # Force Squid to use stable upstream resolvers directly.
+        printf 'dns_nameservers %s\n' "$squid_dns_servers" >> "$config_file"
+    fi
+
     echo "$config_file"
 }
 
@@ -248,6 +255,81 @@ ensure_networks() {
 # Backward compatibility
 ensure_network() {
     ensure_networks
+}
+
+# Resolve configured DNS servers for Squid as a normalized, space-separated
+# list. If AGENTBOX_SQUID_DNS is unset, defaults are used. If explicitly set
+# to an empty value, no override is applied and runtime defaults are inherited.
+get_squid_dns_servers() {
+    local raw_dns=""
+    local dns
+    local -a dns_servers=()
+
+    if [[ -n "${AGENTBOX_SQUID_DNS+x}" ]]; then
+        raw_dns="${AGENTBOX_SQUID_DNS}"
+    else
+        raw_dns="1.1.1.1,8.8.8.8"
+    fi
+
+    # Allow comma or whitespace separators.
+    raw_dns="${raw_dns//,/ }"
+    for dns in $raw_dns; do
+        [[ -z "$dns" ]] && continue
+        dns_servers+=("$dns")
+    done
+
+    if [[ ${#dns_servers[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    printf '%s' "${dns_servers[*]}"
+}
+
+# Get runtime DNS flags for Squid.
+# Defaults to public resolvers to avoid stale Podman-internal DNS forwarders
+# after host sleep/resume events. Set AGENTBOX_SQUID_DNS to a comma/space-
+# separated list, or to an empty value to inherit runtime defaults.
+get_squid_dns_run_args() {
+    local dns
+    local dns_servers
+
+    dns_servers=$(get_squid_dns_servers)
+    [[ -z "$dns_servers" ]] && return 0
+
+    # shellcheck disable=SC2086
+    for dns in $dns_servers; do
+        printf -- '--dns %s ' "$dns"
+    done
+}
+
+# Get DNS search-domain flags for Squid.
+# Default to "." to disable inherited host/runtime search domains (for example
+# tailscale MagicDNS search suffixes) inside the Squid container.
+# Set AGENTBOX_SQUID_DNS_SEARCH to empty to inherit runtime defaults.
+get_squid_dns_search_run_args() {
+    local raw_search=""
+    local search
+    local -a search_domains=()
+
+    if [[ -n "${AGENTBOX_SQUID_DNS_SEARCH+x}" ]]; then
+        raw_search="${AGENTBOX_SQUID_DNS_SEARCH}"
+    else
+        raw_search="."
+    fi
+
+    raw_search="${raw_search//,/ }"
+    for search in $raw_search; do
+        [[ -z "$search" ]] && continue
+        search_domains+=("$search")
+    done
+
+    if [[ ${#search_domains[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    for search in "${search_domains[@]}"; do
+        printf -- '--dns-search %s ' "$search"
+    done
 }
 
 # Start the Squid proxy container
@@ -277,14 +359,35 @@ start_squid_proxy() {
     if [[ -z "$config_file" ]] || [[ ! -f "$config_file" ]]; then
         error "Generated Squid configuration path is invalid."
     fi
-    
+
+    local run_args=(
+        -d
+        --name "$AGENTBOX_SQUID_CONTAINER"
+        --network "$AGENTBOX_EGRESS_NETWORK"
+        -v "$config_file":/etc/squid/squid.conf:ro
+        --restart=unless-stopped
+    )
+
+    local squid_dns_flags
+    squid_dns_flags=$(get_squid_dns_run_args)
+    if [[ -n "$squid_dns_flags" ]]; then
+        local -a squid_dns_flags_array
+        read -r -a squid_dns_flags_array <<< "$squid_dns_flags"
+        run_args+=("${squid_dns_flags_array[@]}")
+    fi
+
+    local squid_dns_search_flags
+    squid_dns_search_flags=$(get_squid_dns_search_run_args)
+    if [[ -n "$squid_dns_search_flags" ]]; then
+        local -a squid_dns_search_flags_array
+        read -r -a squid_dns_search_flags_array <<< "$squid_dns_search_flags"
+        run_args+=("${squid_dns_search_flags_array[@]}")
+    fi
+
+    run_args+=(agentbox-squid)
+
     info "Starting Squid proxy..."
-    if ! $cmd run -d \
-        --name "$AGENTBOX_SQUID_CONTAINER" \
-        --network "$AGENTBOX_EGRESS_NETWORK" \
-        -v "$config_file":/etc/squid/squid.conf:ro \
-        --restart=unless-stopped \
-        agentbox-squid >/dev/null; then
+    if ! $cmd run "${run_args[@]}" >/dev/null; then
         error "Failed to start Squid proxy container."
     fi
 
@@ -336,4 +439,4 @@ get_proxy_env_vars() {
     printf -- '-e NO_PROXY=localhost,127.0.0.1,.local '
 }
 
-export -f ensure_network ensure_networks start_squid_proxy get_proxy_env_vars generate_squid_config normalize_allowlist_entry get_network_subnet
+export -f ensure_network ensure_networks get_squid_dns_servers get_squid_dns_run_args get_squid_dns_search_run_args start_squid_proxy get_proxy_env_vars generate_squid_config normalize_allowlist_entry get_network_subnet

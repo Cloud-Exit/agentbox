@@ -36,6 +36,109 @@ cleanup_squid_if_unused() {
     fi
 }
 
+# Return 0 if a directory has at least one entry.
+_dir_has_entries() {
+    local dir="$1"
+    [[ -d "$dir" ]] || return 1
+    find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .
+}
+
+# Seed managed directory from host directory once (only when managed is empty).
+seed_dir_from_host_once() {
+    local host_dir="$1"
+    local managed_dir="$2"
+
+    [[ -d "$host_dir" ]] || return 0
+    mkdir -p "$managed_dir"
+
+    if _dir_has_entries "$managed_dir"; then
+        return 0
+    fi
+
+    if ! cp -R "$host_dir"/. "$managed_dir"/ 2>/dev/null; then
+        warn "Failed to seed config from $host_dir to $managed_dir"
+    fi
+}
+
+# Seed managed file from host file once (only when managed file does not exist).
+seed_file_from_host_once() {
+    local host_file="$1"
+    local managed_file="$2"
+
+    [[ -f "$host_file" ]] || return 0
+    mkdir -p "$(dirname "$managed_file")"
+
+    if [[ -f "$managed_file" ]]; then
+        return 0
+    fi
+
+    if ! cp "$host_file" "$managed_file" 2>/dev/null; then
+        warn "Failed to seed config from $host_file to $managed_file"
+    fi
+}
+
+# Use managed config mounts on non-Linux hosts, where container mounts are VM-backed.
+should_use_managed_config_mounts() {
+    if [[ "${AGENTBOX_FORCE_MANAGED_CONFIG_MOUNTS:-false}" == "true" ]]; then
+        return 0
+    fi
+    if [[ "${AGENTBOX_FORCE_HOST_CONFIG_MOUNTS:-false}" == "true" ]]; then
+        return 1
+    fi
+
+    local os
+    os=$(detect_os)
+    [[ "$os" != "linux" ]]
+}
+
+# Resolve source directory for mounting into container.
+resolve_dir_mount_source() {
+    local host_dir="$1"
+    local managed_dir="$2"
+    local use_managed="$3"
+
+    if [[ "$use_managed" == "true" ]]; then
+        seed_dir_from_host_once "$host_dir" "$managed_dir"
+        mkdir -p "$managed_dir"
+        printf '%s' "$managed_dir"
+        return 0
+    fi
+
+    if [[ -d "$host_dir" ]]; then
+        printf '%s' "$host_dir"
+    else
+        mkdir -p "$managed_dir"
+        printf '%s' "$managed_dir"
+    fi
+}
+
+# Resolve source file for mounting into container.
+resolve_file_mount_source() {
+    local host_file="$1"
+    local managed_file="$2"
+    local use_managed="$3"
+
+    if [[ "$use_managed" == "true" ]]; then
+        seed_file_from_host_once "$host_file" "$managed_file"
+        mkdir -p "$(dirname "$managed_file")"
+        if [[ ! -f "$managed_file" ]]; then
+            touch "$managed_file"
+        fi
+        printf '%s' "$managed_file"
+        return 0
+    fi
+
+    if [[ -f "$host_file" ]]; then
+        printf '%s' "$host_file"
+    else
+        mkdir -p "$(dirname "$managed_file")"
+        if [[ ! -f "$managed_file" ]]; then
+            touch "$managed_file"
+        fi
+        printf '%s' "$managed_file"
+    fi
+}
+
 # Run an agent container
 # Usage: run_agent_container <agent> <container_name> <mode> [args...]
 run_agent_container() {
@@ -176,65 +279,118 @@ run_agent_container() {
     # Ensure config directories exist
     mkdir -p "$agent_config_dir"
 
+    local use_managed_mounts="false"
+    if should_use_managed_config_mounts; then
+        use_managed_mounts="true"
+    fi
+
     # Mount credentials based on agent type
     case "$agent" in
         claude)
-            # Mount original ~/.claude directly if it exists, otherwise use agentbox config
-            if [[ -d "$HOME/.claude" ]]; then
-                run_args+=(-v "$HOME/.claude":/home/user/.claude)
+            if [[ "$use_managed_mounts" == "true" ]]; then
+                local claude_dir_src
+                claude_dir_src=$(resolve_dir_mount_source "$HOME/.claude" "$agent_config_dir/.claude" "$use_managed_mounts")
+                run_args+=(-v "$claude_dir_src":/home/user/.claude)
+
+                local claude_json_src
+                claude_json_src=$(resolve_file_mount_source "$HOME/.claude.json" "$agent_config_dir/.claude.json" "$use_managed_mounts")
+                run_args+=(-v "$claude_json_src":/home/user/.claude.json)
+
+                local claude_share_dir
+                claude_share_dir=$(resolve_dir_mount_source "$HOME/.local/share/claude" "$agent_config_dir/.local/share/claude" "$use_managed_mounts")
+                run_args+=(-v "$claude_share_dir":/home/user/.local/share/claude)
             else
-                mkdir -p "$agent_config_dir/.claude"
-                run_args+=(-v "$agent_config_dir/.claude":/home/user/.claude)
+                # Linux behavior: keep native host mounts unchanged.
+                if [[ -d "$HOME/.claude" ]]; then
+                    run_args+=(-v "$HOME/.claude":/home/user/.claude)
+                else
+                    mkdir -p "$agent_config_dir/.claude"
+                    run_args+=(-v "$agent_config_dir/.claude":/home/user/.claude)
+                fi
+                if [[ -f "$HOME/.claude.json" ]]; then
+                    run_args+=(-v "$HOME/.claude.json":/home/user/.claude.json)
+                fi
             fi
-            # Mount ~/.claude.json (global onboarding state) if it exists
-            if [[ -f "$HOME/.claude.json" ]]; then
-                run_args+=(-v "$HOME/.claude.json":/home/user/.claude.json)
-            fi
+
             # Claude binary is installed in the container via the build process
             mkdir -p "$agent_config_dir/.config"
             run_args+=(-v "$agent_config_dir/.config":/home/user/.config)
             ;;
         codex)
-            # Mount original ~/.codex directly if it exists
-            if [[ -d "$HOME/.codex" ]]; then
-                run_args+=(-v "$HOME/.codex":/home/user/.codex)
+            if [[ "$use_managed_mounts" == "true" ]]; then
+                local codex_dir_src
+                codex_dir_src=$(resolve_dir_mount_source "$HOME/.codex" "$agent_config_dir/.codex" "$use_managed_mounts")
+                run_args+=(-v "$codex_dir_src":/home/user/.codex)
+
+                local codex_config_dir="$agent_config_dir/.config/codex"
+                seed_dir_from_host_once "$HOME/.config/codex" "$codex_config_dir"
+                mkdir -p "$codex_config_dir"
+                run_args+=(-v "$codex_config_dir":/home/user/.config/codex)
             else
-                mkdir -p "$agent_config_dir/.codex"
-                run_args+=(-v "$agent_config_dir/.codex":/home/user/.codex)
+                # Linux behavior: keep native host mounts unchanged.
+                if [[ -d "$HOME/.codex" ]]; then
+                    run_args+=(-v "$HOME/.codex":/home/user/.codex)
+                else
+                    mkdir -p "$agent_config_dir/.codex"
+                    run_args+=(-v "$agent_config_dir/.codex":/home/user/.codex)
+                fi
+                mkdir -p "$agent_config_dir/.config/codex"
+                run_args+=(-v "$agent_config_dir/.config/codex":/home/user/.config/codex)
             fi
-            mkdir -p "$agent_config_dir/.config/codex"
-            run_args+=(-v "$agent_config_dir/.config/codex":/home/user/.config/codex)
             ;;
         opencode)
-            # Mount original ~/.opencode directly if it exists
-            if [[ -d "$HOME/.opencode" ]]; then
-                if [[ ! -w "$HOME/.opencode" ]]; then
-                    error "OpenCode config dir not writable: $HOME/.opencode (fix ownership, e.g. sudo chown -R $USER:$USER \"$HOME/.opencode\")"
+            if [[ "$use_managed_mounts" == "true" ]]; then
+                local opencode_dir_src
+                opencode_dir_src=$(resolve_dir_mount_source "$HOME/.opencode" "$agent_config_dir/.opencode" "$use_managed_mounts")
+                if [[ ! -w "$opencode_dir_src" ]]; then
+                    error "OpenCode config dir not writable: $opencode_dir_src (fix ownership, e.g. sudo chown -R $USER:$USER \"$opencode_dir_src\")"
                 fi
-                run_args+=(-v "$HOME/.opencode":/home/user/.opencode)
+                run_args+=(-v "$opencode_dir_src":/home/user/.opencode)
+
+                local opencode_config_dir="$agent_config_dir/.config/opencode"
+                seed_dir_from_host_once "$HOME/.config/opencode" "$opencode_config_dir"
+                mkdir -p "$opencode_config_dir"
+                if [[ ! -w "$opencode_config_dir" ]]; then
+                    error "OpenCode config dir not writable: $opencode_config_dir (fix ownership, e.g. sudo chown -R $USER:$USER \"$opencode_config_dir\")"
+                fi
+                run_args+=(-v "$opencode_config_dir":/home/user/.config/opencode)
+
+                # Mount local share for OpenCode auth/state
+                local opencode_share_dir
+                opencode_share_dir=$(resolve_dir_mount_source "$HOME/.local/share/opencode" "$agent_config_dir/.local/share/opencode" "$use_managed_mounts")
+                if [[ ! -w "$opencode_share_dir" ]]; then
+                    error "OpenCode share dir not writable: $opencode_share_dir (fix ownership, e.g. sudo chown -R $USER:$USER \"$opencode_share_dir\")"
+                fi
+                run_args+=(-v "$opencode_share_dir":/home/user/.local/share/opencode)
             else
-                mkdir -p "$agent_config_dir/.opencode"
-                if [[ ! -w "$agent_config_dir/.opencode" ]]; then
-                    error "OpenCode config dir not writable: $agent_config_dir/.opencode (fix ownership, e.g. sudo chown -R $USER:$USER \"$agent_config_dir/.opencode\")"
+                # Linux behavior: keep native host mounts unchanged.
+                if [[ -d "$HOME/.opencode" ]]; then
+                    if [[ ! -w "$HOME/.opencode" ]]; then
+                        error "OpenCode config dir not writable: $HOME/.opencode (fix ownership, e.g. sudo chown -R $USER:$USER \"$HOME/.opencode\")"
+                    fi
+                    run_args+=(-v "$HOME/.opencode":/home/user/.opencode)
+                else
+                    mkdir -p "$agent_config_dir/.opencode"
+                    if [[ ! -w "$agent_config_dir/.opencode" ]]; then
+                        error "OpenCode config dir not writable: $agent_config_dir/.opencode (fix ownership, e.g. sudo chown -R $USER:$USER \"$agent_config_dir/.opencode\")"
+                    fi
+                    run_args+=(-v "$agent_config_dir/.opencode":/home/user/.opencode)
                 fi
-                run_args+=(-v "$agent_config_dir/.opencode":/home/user/.opencode)
+                mkdir -p "$agent_config_dir/.config/opencode"
+                if [[ ! -w "$agent_config_dir/.config/opencode" ]]; then
+                    error "OpenCode config dir not writable: $agent_config_dir/.config/opencode (fix ownership, e.g. sudo chown -R $USER:$USER \"$agent_config_dir/.config/opencode\")"
+                fi
+                if [[ -f "$HOME/.config/opencode/opencode.json" ]] && [[ ! -f "$agent_config_dir/.config/opencode/opencode.json" ]]; then
+                    cp "$HOME/.config/opencode/opencode.json" "$agent_config_dir/.config/opencode/opencode.json"
+                fi
+                run_args+=(-v "$agent_config_dir/.config/opencode":/home/user/.config/opencode)
+                local opencode_share_dir="$HOME/.local/share/opencode"
+                mkdir -p "$opencode_share_dir"
+                if [[ ! -w "$opencode_share_dir" ]]; then
+                    error "OpenCode share dir not writable: $opencode_share_dir (fix ownership, e.g. sudo chown -R $USER:$USER \"$opencode_share_dir\")"
+                fi
+                run_args+=(-v "$opencode_share_dir":/home/user/.local/share/opencode)
             fi
-            # Persist config on host, but only seed opencode.json if present.
-            mkdir -p "$agent_config_dir/.config/opencode"
-            if [[ ! -w "$agent_config_dir/.config/opencode" ]]; then
-                error "OpenCode config dir not writable: $agent_config_dir/.config/opencode (fix ownership, e.g. sudo chown -R $USER:$USER \"$agent_config_dir/.config/opencode\")"
-            fi
-            if [[ -f "$HOME/.config/opencode/opencode.json" ]] && [[ ! -f "$agent_config_dir/.config/opencode/opencode.json" ]]; then
-                cp "$HOME/.config/opencode/opencode.json" "$agent_config_dir/.config/opencode/opencode.json"
-            fi
-            run_args+=(-v "$agent_config_dir/.config/opencode":/home/user/.config/opencode)
-            # Mount local share for OpenCode auth/state
-            local opencode_share_dir="$HOME/.local/share/opencode"
-            mkdir -p "$opencode_share_dir"
-            if [[ ! -w "$opencode_share_dir" ]]; then
-                error "OpenCode share dir not writable: $opencode_share_dir (fix ownership, e.g. sudo chown -R $USER:$USER \"$opencode_share_dir\")"
-            fi
-            run_args+=(-v "$opencode_share_dir":/home/user/.local/share/opencode)
             # Mount local state for OpenCode (prevents root-owned /home/user/.local)
             local opencode_state_dir="$agent_config_dir/.local/state"
             mkdir -p "$opencode_state_dir"

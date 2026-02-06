@@ -248,6 +248,8 @@ Your project directory is mounted at `/workspace`.
 | `VERBOSE`             | Enable verbose output                |
 | `CONTAINER_RUNTIME`   | Force runtime (`podman` or `docker`) |
 | `AGENTBOX_NO_FIREWALL`| Disable firewall (`true`)            |
+| `AGENTBOX_SQUID_DNS`  | Squid DNS servers (comma/space list, default: `1.1.1.1,8.8.8.8`) |
+| `AGENTBOX_SQUID_DNS_SEARCH` | Squid DNS search domains (default: `.` to disable inherited search suffixes) |
 
 ## Network Firewall
 
