@@ -292,15 +292,25 @@ import_agent_config() {
         codex)
             # Import Codex tokens and settings
             if [[ -d "$source_path" ]]; then
-                mkdir -p "$dest_dir/.codex"
-                cp -r "$source_path"/* "$dest_dir/.codex/" 2>/dev/null || true
+                if [[ "$source_path" == "$HOME/.config/codex" ]]; then
+                    mkdir -p "$dest_dir/.config/codex"
+                    cp -r "$source_path"/* "$dest_dir/.config/codex/" 2>/dev/null || true
+                else
+                    mkdir -p "$dest_dir/.codex"
+                    cp -r "$source_path"/* "$dest_dir/.codex/" 2>/dev/null || true
+                fi
             fi
             ;;
         opencode)
             # Import OpenCode config
             if [[ -d "$source_path" ]]; then
-                mkdir -p "$dest_dir/.opencode"
-                cp -r "$source_path"/* "$dest_dir/.opencode/" 2>/dev/null || true
+                if [[ "$source_path" == "$HOME/.config/opencode" ]]; then
+                    mkdir -p "$dest_dir/.config/opencode"
+                    cp -r "$source_path"/* "$dest_dir/.config/opencode/" 2>/dev/null || true
+                else
+                    mkdir -p "$dest_dir/.opencode"
+                    cp -r "$source_path"/* "$dest_dir/.opencode/" 2>/dev/null || true
+                fi
             fi
             ;;
     esac

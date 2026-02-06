@@ -74,6 +74,7 @@ _cmd_agent_list() {
     printf '  agentbox enable <agent>     Enable an agent\n'
     printf '  agentbox disable <agent>    Disable an agent\n'
     printf '  agentbox rebuild <agent>    Force rebuild of agent image\n'
+    printf '  agentbox import <agent>     Import agent config from host\n'
     printf '  agentbox uninstall [agent]  Uninstall agentbox or specific agent\n'
     printf '  agentbox aliases            Print shell aliases\n'
     printf '\n'
@@ -112,6 +113,48 @@ _cmd_agent_rebuild() {
         success "$display_name image rebuilt successfully"
     else
         error "Failed to rebuild $display_name image"
+    fi
+}
+
+# ============================================================================
+# IMPORT COMMAND
+# ============================================================================
+
+_cmd_agent_import() {
+    local agent="${1:-}"
+
+    if [[ -z "$agent" ]]; then
+        error "Usage: agentbox import <agent>|all"
+    fi
+
+    local agents=()
+    if [[ "$agent" == "all" ]]; then
+        agents=("${AGENTBOX_AGENTS[@]}")
+    else
+        if ! agent_exists "$agent"; then
+            error "Unknown agent: $agent"
+        fi
+        agents=("$agent")
+    fi
+
+    local imported_any=false
+    local a
+    for a in "${agents[@]}"; do
+        local source_path=""
+        source_path=$(detect_existing_agent_config "$a" 2>/dev/null || true)
+
+        if [[ -z "$source_path" ]]; then
+            warn "No host config found for $a"
+            continue
+        fi
+
+        import_agent_config "$a" "$source_path"
+        success "Imported $a config from $source_path"
+        imported_any=true
+    done
+
+    if [[ "$imported_any" == "false" ]]; then
+        return 1
     fi
 }
 

@@ -14,7 +14,7 @@ get_command_requirements() {
 
     case "$cmd" in
         # Commands that need nothing
-        help|version|aliases|logs)
+        help|version|aliases|logs|import)
             printf 'none'
             ;;
         # Commands that need Docker but not a specific image
@@ -72,6 +72,9 @@ dispatch_command() {
 
         logs)
             _cmd_agent_logs "${args[@]}"
+            ;;
+        import)
+            _cmd_agent_import "${args[@]}"
             ;;
 
         # Profile commands (agent-specific)

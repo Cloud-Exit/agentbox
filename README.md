@@ -44,7 +44,7 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 
 ### Usability
 - **Cross-Platform**: Works on Linux, macOS, and Windows (via WSL2)
-- **Zero Config**: Mounts your existing agent config directly - no import needed
+- **Config Import**: Linux mounts existing agent config directly. On macOS/Windows, use `agentbox import <agent>` to copy host config once.
 - **Simple Commands**: Just run `agentbox claude` to get started
 
 ## Supported Agents
@@ -55,7 +55,7 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 | `codex`     | OpenAI's Codex CLI           | None (downloaded)|
 | `opencode`  | OpenCode AI assistant        | None (official image + tools) |
 
-**Note**: All agents are installed inside the container. If you have existing config (`~/.claude`, etc.), it will be mounted automatically.
+**Note**: All agents are installed inside the container. On Linux, existing config (`~/.claude`, etc.) is mounted automatically. On macOS/Windows, use `agentbox import <agent>` (or `agentbox import all`) to seed managed config.
 
 ## Installation
 

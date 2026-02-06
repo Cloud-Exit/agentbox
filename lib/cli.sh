@@ -193,6 +193,7 @@ Management Commands:
   enable <agent>     Enable an agent
   disable <agent>    Disable an agent
   rebuild <agent>     Force rebuild of agent image
+  import <agent>     Import agent config from host
   uninstall [agent]   Uninstall agentbox or specific agent
   aliases             Print shell aliases
 
