@@ -317,6 +317,10 @@ run_agent_container() {
             run_args+=(-v "$agent_config_dir/.config":/home/user/.config)
             ;;
         codex)
+            # Codex OAuth flow uses a localhost callback server on port 1455.
+            # Publish that port to host loopback so browser auth can return.
+            run_args+=(-p "127.0.0.1:1455:1455")
+
             if [[ "$use_managed_mounts" == "true" ]]; then
                 local codex_dir_src
                 codex_dir_src=$(resolve_dir_mount_source "$HOME/.codex" "$agent_config_dir/.codex" "$use_managed_mounts")

@@ -239,6 +239,8 @@ AgentBox mounts your existing config directly from the host:
 
 Your project directory is mounted at `/workspace`.
 
+For Codex authentication, AgentBox publishes `127.0.0.1:1455` to the Codex container so OAuth callbacks to `http://localhost:1455/auth/callback` can complete.
+
 **Note:** SSH keys (`~/.ssh`) and AWS credentials (`~/.aws`) are **NOT** mounted by default for security.
 
 ### Environment Variables
