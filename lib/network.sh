@@ -69,6 +69,11 @@ normalize_allowlist_entry() {
         return 0
     fi
 
+    if [[ "$value" == "localhost" ]]; then
+        printf '%s' "$value"
+        return 0
+    fi
+
     if [[ "$is_ipv6" == "true" ]]; then
         printf '%s' "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
         return 0
@@ -497,6 +502,10 @@ configure_codex_callback_relay() {
 
     if [[ -z "$codex_container_name" ]]; then
         error "Codex callback relay requires a container name."
+    fi
+
+    if [[ "${AGENTBOX_NO_FIREWALL:-false}" == "true" ]]; then
+        return 0
     fi
 
     if ! should_publish_codex_callback_port; then

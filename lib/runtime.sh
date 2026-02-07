@@ -138,6 +138,19 @@ resolve_file_mount_source() {
     fi
 }
 
+# Return 0 if an env var name is reserved by agentbox runtime wiring.
+is_reserved_container_env_var() {
+    local key="$1"
+    case "$key" in
+        AGENTBOX_AGENT|AGENTBOX_PROJECT_NAME|http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY|no_proxy|NO_PROXY)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Run an agent container
 # Usage: run_agent_container <agent> <container_name> <mode> [args...]
 run_agent_container() {
@@ -181,11 +194,16 @@ run_agent_container() {
         run_args+=("--security-opt=no-new-privileges")
     fi
 
-    # Network Setup: agents are attached only to the internal network.
+    # Network setup.
     ensure_networks
-    run_args+=("--network" "$AGENTBOX_INTERNAL_NETWORK")
-    
-    # Firewall / Proxy Setup
+    local agent_network="$AGENTBOX_INTERNAL_NETWORK"
+    if [[ "${AGENTBOX_NO_FIREWALL:-false}" == "true" ]]; then
+        # No-firewall mode attaches directly to the egress network.
+        agent_network="$AGENTBOX_EGRESS_NETWORK"
+    fi
+    run_args+=("--network" "$agent_network")
+
+    # Firewall / proxy setup
     if [[ "${AGENTBOX_NO_FIREWALL:-false}" != "true" ]]; then
         if ! start_squid_proxy; then
             error "Failed to start firewall (Squid proxy). Aborting for security."
@@ -197,6 +215,9 @@ run_agent_container() {
         # We can just split it by space if we trust it doesn't contain spaces in values (urls don't).
         read -r -a proxy_flags_array <<< "$proxy_flags"
         run_args+=("${proxy_flags_array[@]}")
+    elif [[ "$agent" == "codex" ]] && should_publish_codex_callback_port; then
+        # In no-firewall mode there is no shared Squid relay; expose Codex relay directly.
+        run_args+=(-p "1455:2455")
     fi
 
     # Get the image name for this agent and project
@@ -421,15 +442,9 @@ run_agent_container() {
         fi
     fi
 
-    # Add environment variables
+    # Add environment variables.
     local project_name
     project_name=$(basename "$PROJECT_DIR")
-
-    # Internal vars are always passed (agentbox needs these to function)
-    run_args+=(
-        -e "AGENTBOX_AGENT=$agent"
-        -e "AGENTBOX_PROJECT_NAME=$project_name"
-    )
 
     # Host environment variables (skipped with --no-env)
     if [[ "${CLI_NO_ENV:-false}" != "true" ]]; then
@@ -444,9 +459,25 @@ run_agent_container() {
     if [[ ${#CLI_ENV_VARS[@]} -gt 0 ]]; then
         local env_var
         for env_var in "${CLI_ENV_VARS[@]}"; do
+            if [[ "$env_var" != *=* ]]; then
+                error "Invalid -e value '$env_var'. Expected KEY=VALUE."
+            fi
+            local env_key="${env_var%%=*}"
+            if [[ ! "$env_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                error "Invalid environment variable name in -e: $env_key"
+            fi
+            if is_reserved_container_env_var "$env_key"; then
+                error "Environment variable '$env_key' is reserved and cannot be overridden with -e."
+            fi
             run_args+=(-e "$env_var")
         done
     fi
+
+    # Internal vars are always passed last so they cannot be overridden.
+    run_args+=(
+        -e "AGENTBOX_AGENT=$agent"
+        -e "AGENTBOX_PROJECT_NAME=$project_name"
+    )
 
     # Security options
     run_args+=(
@@ -539,4 +570,5 @@ clean_docker_resources() {
 
 
 export -f count_running_agent_containers cleanup_squid_if_unused
+export -f is_reserved_container_env_var
 export -f run_agent_container check_container_exists clean_container_resources clean_docker_resources

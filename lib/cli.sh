@@ -284,7 +284,7 @@ Options:
   -f, --no-firewall       Disable network firewall *DANGEROUS*
   -r, --read-only         Mount workspace as read-only
   -n, --no-env            Don't pass host environment variables to container
-  -e KEY=VALUE            Pass an environment variable to the container (repeatable)
+  -e KEY=VALUE            Pass an environment variable to the container (repeatable; reserved runtime vars are blocked)
   -i, --include-dir PATH  Mount a host dir inside /workspace (repeatable)
   -t, --tools PKG         Add Alpine packages to the image (comma-separated, persisted)
   -a, --allow-urls DOMAIN Allow extra domains for this session (comma-separated)

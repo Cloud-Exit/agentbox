@@ -232,16 +232,23 @@ All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--ver
 
 | Profile       | Description                              |
 |:--------------|:-----------------------------------------|
-| `node`        | Node.js runtime with npm                 |
+| `base`        | Base development tools                   |
+| `build-tools` | Build toolchain helpers                  |
+| `shell`       | Shell and file transfer utilities        |
+| `networking`  | Network diagnostics and tooling          |
+| `c`           | C/C++ toolchain (gcc, make, cmake)       |
+| `node`        | Node.js runtime with npm and JS tooling  |
 | `python`      | Python 3 with pip                        |
 | `rust`        | Rust toolchain with cargo                |
-| `go`          | Go runtime                               |
-| `java`        | Java JDK with Maven and Gradle           |
+| `go`          | Go runtime (arch-aware, checksum verified) |
+| `java`        | OpenJDK with Maven and Gradle            |
 | `ruby`        | Ruby with bundler                        |
 | `php`         | PHP with composer                        |
-| `c`           | C/C++ toolchain (gcc, make, cmake)       |
+| `database`    | Database CLI clients                     |
+| `devops`      | Docker CLI / kubectl / helm / terraform  |
+| `web`         | Web server/testing tools                 |
+| `security`    | Security diagnostics tools               |
 | `flutter`     | Flutter SDK                              |
-| `dotnet`      | .NET SDK                                 |
 
 ## Configuration
 

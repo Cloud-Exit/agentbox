@@ -62,6 +62,61 @@ source "${LIB_DIR}/agents/opencode.sh"
 source "${LIB_DIR}/commands.agent.sh"
 
 # ============================================================================
+# RUNTIME HELPERS
+# ============================================================================
+
+# Ensure a container runtime is available and operational.
+# Installs or starts the runtime when possible, exits on failure.
+ensure_container_runtime() {
+    local runtime_status
+    local runtime_cmd
+    runtime_status=$(check_container_runtime; printf '%s' $?)
+    runtime_cmd=$(container_cmd 2>/dev/null || printf '')
+
+    case "$runtime_status" in
+        0) return 0 ;;
+        1) install_container_runtime ;;
+        2)
+            if [[ "$runtime_cmd" == "docker" ]]; then
+                warn "Docker is installed but not running."
+                case "$(uname -s)" in
+                    Darwin)
+                        error "Docker Desktop is not running. Please start it."
+                        ;;
+                    Linux)
+                        warn "Starting Docker..."
+                        sudo systemctl start docker
+                        if ! $runtime_cmd info >/dev/null 2>&1; then
+                            error "Failed to start Docker"
+                        fi
+                        ;;
+                esac
+            else
+                warn "Podman is installed but not ready."
+                case "$(uname -s)" in
+                    Darwin)
+                        error "Podman machine is not running. Start it with: podman machine start"
+                        ;;
+                    Linux)
+                        error "Podman is not available for the current user. Run 'podman info' and configure rootless Podman."
+                        ;;
+                    *)
+                        error "Container runtime '$runtime_cmd' is not ready."
+                        ;;
+                esac
+            fi
+            ;;
+        3)
+            if [[ "$runtime_cmd" == "docker" ]]; then
+                configure_docker_nonroot
+            else
+                error "Container runtime '$runtime_cmd' reported a permissions error."
+            fi
+            ;;
+    esac
+}
+
+# ============================================================================
 # MAIN FUNCTION
 # ============================================================================
 
@@ -153,30 +208,7 @@ main() {
 
         # Run Docker checks if needed
         if [[ "$requirements" == "docker" ]]; then
-            local docker_status
-            docker_status=$(check_container_runtime; printf '%s' $?)
-
-            case "$docker_status" in
-                1) install_container_runtime ;;
-                2)
-                    warn "Docker is installed but not running."
-                    case "$(uname -s)" in
-                        Darwin)
-                            error "Docker Desktop is not running. Please start it."
-                            ;;
-                        Linux)
-                            warn "Starting Docker..."
-                            sudo systemctl start docker
-                            if ! docker info >/dev/null 2>&1; then
-                                error "Failed to start Docker"
-                            fi
-                            ;;
-                    esac
-                    ;;
-                3)
-                    configure_docker_nonroot
-                    ;;
-            esac
+            ensure_container_runtime
 
             # Initialize project
             init_project_dir "$PROJECT_DIR"
@@ -203,30 +235,7 @@ main() {
 
     # Run Docker checks if needed
     if [[ "$requirements" == "docker" ]] || [[ "$requirements" == "image" ]]; then
-        local docker_status
-        docker_status=$(check_container_runtime; printf '%s' $?)
-
-        case "$docker_status" in
-            1) install_container_runtime ;;
-            2)
-                warn "Docker is installed but not running."
-                case "$(uname -s)" in
-                    Darwin)
-                        error "Docker Desktop is not running. Please start it."
-                        ;;
-                    Linux)
-                        warn "Starting Docker..."
-                        sudo systemctl start docker
-                        if ! docker info >/dev/null 2>&1; then
-                            error "Failed to start Docker"
-                        fi
-                        ;;
-                esac
-                ;;
-            3)
-                configure_docker_nonroot
-                ;;
-        esac
+        ensure_container_runtime
     fi
 
     # Dispatch to command handler

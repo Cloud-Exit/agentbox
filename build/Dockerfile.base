@@ -4,13 +4,14 @@
 # Minimal, security-focused base with working firewall
 # ==============================================================================
 
-FROM alpine:latest
+FROM alpine:3.21
 
 # Build arguments
 ARG USER_ID=1000
 ARG GROUP_ID=1000
 ARG USERNAME=user
 ARG DELTA_VERSION=0.18.2
+ARG YQ_VERSION=4.52.2
 ARG TARGETARCH=x86_64
 ARG AGENTBOX_VERSION=3.2.0
 
@@ -25,16 +26,20 @@ COPY tools.txt /tmp/tools.txt
 RUN apk add --no-cache $(grep -v '^\s*#' /tmp/tools.txt | grep -v '^\s*$' | tr '\n' ' ') \
     && rm /tmp/tools.txt
 
-# Install yq (architecture-aware)
+# Install yq (architecture-aware, version-pinned, checksum-verified)
 RUN if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
         YQ_ARCH="amd64"; \
+        YQ_SHA256="a74bd266990339e0c48a2103534aef692abf99f19390d12c2b0ce6830385c459"; \
     elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
         YQ_ARCH="arm64"; \
+        YQ_SHA256="c82856ac30da522f50dcdd4f53065487b5a2927e9b87ff637956900986f1f7c2"; \
     else \
         YQ_ARCH="amd64"; \
+        YQ_SHA256="a74bd266990339e0c48a2103534aef692abf99f19390d12c2b0ce6830385c459"; \
     fi && \
-    curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${YQ_ARCH}" -o /usr/local/bin/yq \
-    && chmod +x /usr/local/bin/yq
+    curl -sL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_${YQ_ARCH}" -o /usr/local/bin/yq && \
+    echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c - && \
+    chmod +x /usr/local/bin/yq
 
 # Install git-delta for better diffs (musl build for Alpine)
 RUN mkdir -p /usr/local/bin && \
@@ -68,16 +73,16 @@ RUN chmod +x /usr/local/bin/docker-entrypoint
 # Stay as root for entrypoint (drops to user after setup)
 WORKDIR /workspace
 
-# Configure git for user
-RUN git config --global core.pager "delta --dark" && \
-    git config --global interactive.diffFilter "delta --color-only" && \
-    git config --global delta.navigate true && \
-    git config --global delta.light false && \
-    git config --global delta.side-by-side true && \
-    git config --global merge.conflictstyle diff3 && \
-    git config --global diff.colorMoved default && \
-    git config --global init.defaultBranch main && \
-    git config --global core.editor vim
+# Configure git defaults system-wide so they apply to the runtime user.
+RUN git config --system core.pager "delta --dark" && \
+    git config --system interactive.diffFilter "delta --color-only" && \
+    git config --system delta.navigate true && \
+    git config --system delta.light false && \
+    git config --system delta.side-by-side true && \
+    git config --system merge.conflictstyle diff3 && \
+    git config --system diff.colorMoved default && \
+    git config --system init.defaultBranch main && \
+    git config --system core.editor vim
 
 # Labels
 LABEL agentbox.type="base"

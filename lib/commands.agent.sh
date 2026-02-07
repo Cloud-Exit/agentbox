@@ -4,25 +4,7 @@
 # Commands: list, enable, disable, aliases
 # Manages multiple AI coding assistant agents (Claude, Codex, OpenCode)
 
-# Load agent modules
-_load_agent_modules() {
-    local lib_dir="${LIB_DIR:-${SCRIPT_DIR}/lib}"
-
-    # Load base agent module
-    # shellcheck source=lib/agents/base.sh
-    source "${lib_dir}/agents/base.sh"
-
-    # Load individual agent modules
-    # shellcheck source=lib/agents/claude.sh
-    source "${lib_dir}/agents/claude.sh"
-    # shellcheck source=lib/agents/codex.sh
-    source "${lib_dir}/agents/codex.sh"
-    # shellcheck source=lib/agents/opencode.sh
-    source "${lib_dir}/agents/opencode.sh"
-}
-
-# Ensure agent modules are loaded
-_load_agent_modules
+# Agent modules are loaded by main.sh before this file is sourced.
 
 # ============================================================================
 # LIST COMMAND
@@ -315,16 +297,14 @@ _cmd_agent_run() {
     # Set the current agent for downstream functions
     export AGENTBOX_CURRENT_AGENT="$agent"
 
-    # Always check for updates
-    local should_update="true"
-    
-    if [[ "$should_update" == "true" ]]; then
+    # Check for updates only when explicitly requested via --update / -u
+    if [[ "${CLI_UPDATE:-false}" == "true" ]]; then
         local new_version
         if new_version=$(check_agent_update "$agent"); then
              info "Update available for $agent: $new_version"
              info "Rebuilding image..."
              build_agent_core_image "$agent" "true"
-        elif [[ "${CLI_UPDATE:-false}" == "true" ]]; then
+        else
              info "$agent is up to date"
         fi
     fi
@@ -340,7 +320,7 @@ _cmd_agent_run() {
 
     # Get project hash for container naming
     local project_hash
-    project_hash=$(generate_parent_folder_name "$PROJECT_DIR")
+    project_hash=$(generate_project_folder_name "$PROJECT_DIR")
 
     # Get container name
     local container_name
@@ -514,27 +494,22 @@ _cmd_profile_status() {
     cecho "$display_name Profile Status" "$CYAN"
     printf '\n'
 
-    local profiles_file="${PROJECT_PARENT_DIR:-}/profiles.ini"
-
-    if [[ -f "$profiles_file" ]]; then
-        local current_profiles=()
-        while IFS= read -r line; do
-            if [[ -n "$line" ]]; then
-                current_profiles+=("$line")
-            fi
-        done < <(read_profile_section "$profiles_file" "profiles")
-
-        if [[ ${#current_profiles[@]} -gt 0 ]]; then
-            printf 'Active profiles:\n'
-            local profile
-            for profile in "${current_profiles[@]}"; do
-                local desc
-                desc=$(get_profile_description "$profile")
-                printf '  %s - %s\n' "$profile" "$desc"
-            done
-        else
-            printf 'No profiles configured.\n'
+    local current_profiles=()
+    local line
+    while IFS= read -r line; do
+        if [[ -n "$line" ]]; then
+            current_profiles+=("$line")
         fi
+    done < <(get_project_profiles "$agent")
+
+    if [[ ${#current_profiles[@]} -gt 0 ]]; then
+        printf 'Active profiles:\n'
+        local profile
+        for profile in "${current_profiles[@]}"; do
+            local desc
+            desc=$(get_profile_description "$profile")
+            printf '  %s - %s\n' "$profile" "$desc"
+        done
     else
         printf 'No profiles configured.\n'
     fi

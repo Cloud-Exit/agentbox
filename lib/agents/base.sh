@@ -49,6 +49,9 @@ get_agent_project_config_dir() {
     local project_parent="${PROJECT_PARENT_DIR:-}"
 
     if [[ -z "$project_parent" ]]; then
+        project_parent=$(get_project_parent_dir 2>/dev/null || true)
+    fi
+    if [[ -z "$project_parent" ]]; then
         return 1
     fi
 
@@ -133,8 +136,10 @@ enable_agent() {
     if [[ -f "$config_file" ]]; then
         local temp_file
         temp_file=$(mktemp)
+        trap 'rm -f "$temp_file"' RETURN
         grep -v "^${agent}=" "$config_file" > "$temp_file" 2>/dev/null || true
         mv "$temp_file" "$config_file"
+        trap - RETURN
     fi
 
     # Add enabled entry
@@ -161,8 +166,10 @@ disable_agent() {
     # Remove existing entry for this agent
     local temp_file
     temp_file=$(mktemp)
+    trap 'rm -f "$temp_file"' RETURN
     grep -v "^${agent}=" "$config_file" > "$temp_file" 2>/dev/null || true
     mv "$temp_file" "$config_file"
+    trap - RETURN
 
     # Add disabled entry
     printf '%s=disabled\n' "$agent" >> "$config_file"
@@ -192,7 +199,7 @@ agent_get_display_name() {
 agent_get_install_method() {
     local agent="$1"
     case "$agent" in
-        claude)   printf 'npm' ;;
+        claude)   printf 'binary' ;;
         codex)    printf 'binary' ;;
         opencode) printf 'binary' ;;
         *)        printf 'unknown' ;;

@@ -274,35 +274,15 @@ _cmd_profiles() {
     cecho "Available Profiles:" "$CYAN"
     printf '\n'
 
-    local profiles=(
-        "base:Base development tools (git, vim, curl)"
-        "node:Node.js runtime with npm"
-        "python:Python 3 with pip and venv"
-        "rust:Rust toolchain with cargo"
-        "go:Go runtime"
-        "java:Java JDK"
-        "ruby:Ruby runtime with bundler"
-        "php:PHP runtime with composer"
-        "dotnet:.NET SDK"
-        "c:C/C++ toolchain (gcc, make, cmake)"
-        "flutter:Flutter SDK for mobile development"
-        "android:Android SDK and tools"
-        "docker:Docker-in-Docker support"
-        "kubernetes:kubectl and helm"
-        "terraform:Terraform CLI"
-        "aws:AWS CLI"
-        "gcloud:Google Cloud SDK"
-        "azure:Azure CLI"
-    )
-
     printf '  %-15s %s\n' "PROFILE" "DESCRIPTION"
     printf '  %-15s %s\n' "───────" "───────────"
 
-    for entry in "${profiles[@]}"; do
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
         local name="${entry%%:*}"
         local desc="${entry#*:}"
         printf '  %-15s %s\n' "$name" "$desc"
-    done
+    done < <(list_available_profiles)
 
     printf '\n'
     printf 'Add profiles with: agentbox <agent> profile add <name>\n'

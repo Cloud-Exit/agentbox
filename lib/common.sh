@@ -181,32 +181,12 @@ read_profile_section() {
     done < "$file"
 }
 
-# Get profile description
-get_profile_description() {
-    local profile="$1"
-
-    case "$profile" in
-        base)        printf 'Base development tools' ;;
-        node)        printf 'Node.js runtime' ;;
-        python)      printf 'Python runtime' ;;
-        rust)        printf 'Rust toolchain' ;;
-        go)          printf 'Go runtime' ;;
-        java)        printf 'Java/JDK' ;;
-        ruby)        printf 'Ruby runtime' ;;
-        php)         printf 'PHP runtime' ;;
-        dotnet)      printf '.NET SDK' ;;
-        c)           printf 'C/C++ toolchain' ;;
-        flutter)     printf 'Flutter SDK' ;;
-        android)     printf 'Android SDK' ;;
-        docker)      printf 'Docker-in-Docker' ;;
-        kubernetes)  printf 'Kubernetes tools' ;;
-        terraform)   printf 'Terraform' ;;
-        aws)         printf 'AWS CLI' ;;
-        gcloud)      printf 'Google Cloud SDK' ;;
-        azure)       printf 'Azure CLI' ;;
-        *)           printf 'Unknown profile' ;;
-    esac
-}
+# get_profile_description is defined in config.sh (single source of truth
+# via list_available_profiles). This stub is kept only for the brief window
+# between common.sh and config.sh being sourced.
+if ! declare -F get_profile_description >/dev/null 2>&1; then
+    get_profile_description() { printf 'Unknown profile'; }
+fi
 
 # ============================================================================
 # EXPORTS
@@ -216,4 +196,4 @@ export RED GREEN YELLOW BLUE MAGENTA CYAN WHITE BOLD DIM NC
 export -f cecho info success warn error debug
 export -f logo logo_small
 export -f command_exists generate_hash generate_parent_folder_name get_real_path
-export -f read_profile_section get_profile_description
+export -f read_profile_section

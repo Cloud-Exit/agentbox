@@ -118,8 +118,8 @@ build_squid_image() {
     local build_context="${AGENTBOX_CACHE}/build-squid"
     mkdir -p "$build_context"
 
-    cat > "$build_context/Dockerfile" << 'EOF'
-FROM alpine:latest
+    cat > "$build_context/Dockerfile" << EOF
+FROM alpine:3.21
 ARG AGENTBOX_VERSION
 RUN apk add --no-cache squid socat ripgrep python3
 RUN mkdir -p /etc/squid
@@ -153,23 +153,34 @@ build_agent_core_image() {
     local cmd
     cmd=$(container_cmd)
 
+    # Fetch latest agent version for cache comparison
+    local latest_agent_version=""
+    case "$agent" in
+        claude)  latest_agent_version=$(claude_get_latest_version 2>/dev/null) || latest_agent_version="" ;;
+        codex)   latest_agent_version=$(codex_get_latest_version 2>/dev/null) || latest_agent_version="" ;;
+        opencode) latest_agent_version=$(opencode_get_latest_version 2>/dev/null) || latest_agent_version="" ;;
+    esac
+
     # Skip if image exists and not forcing rebuild
     if [[ "$force" != "true" ]] && container_image_exists "$image_name"; then
-        # Check if version matches
         local image_version
         image_version=$($cmd inspect "$image_name" --format '{{index .Config.Labels "agentbox.version"}}' 2>/dev/null || printf '')
-        
-        # If version matches (and for agents that use base, we rely on base check or recursive check logic? 
-        # Actually base check happens below. But if core exists, we typically return.
-        # We should check version here to force update.)
+        local image_agent_version
+        image_agent_version=$($cmd inspect "$image_name" --format '{{index .Config.Labels "agentbox.agent.version"}}' 2>/dev/null || printf '')
+
         if [[ "$image_version" == "$AGENTBOX_VERSION" ]]; then
-            # Still ensure base exists (except for agents with custom base)
-            if [[ "$agent" != "opencode" ]]; then
-                build_base_image "false"
+            # Check if the agent itself has a newer release
+            if [[ -n "$latest_agent_version" ]] && [[ -n "$image_agent_version" ]] && [[ "$latest_agent_version" != "$image_agent_version" ]]; then
+                info "$agent update available ($image_agent_version -> $latest_agent_version). Rebuilding..."
+            else
+                if [[ "$agent" != "opencode" ]]; then
+                    build_base_image "false"
+                fi
+                return 0
             fi
-            return 0
+        else
+            info "Agent core image version mismatch ($image_version != $AGENTBOX_VERSION). Rebuilding..."
         fi
-        info "Agent core image version mismatch ($image_version != $AGENTBOX_VERSION). Rebuilding..."
     fi
 
     # Build base image (force if we're forcing) - except for agents with custom base
@@ -201,11 +212,27 @@ build_agent_core_image() {
             local version
             version=$(codex_get_latest_version) || version="latest"
             printf 'ARG CODEX_VERSION=%s\n' "$version" >> "$dockerfile"
+
+            # Pre-download binary and compute checksum for verification
+            local codex_binary_name
+            codex_binary_name=$(codex_get_binary_name) || error "Unsupported architecture for Codex"
+            local codex_url="https://github.com/${CODEX_GITHUB_REPO}/releases/download/${version}/${codex_binary_name}"
+            local codex_dl="$build_context/${codex_binary_name}"
+            info "Downloading Codex ${version}..."
+            if ! curl -fsSL -o "$codex_dl" "$codex_url"; then
+                error "Failed to download Codex binary from $codex_url"
+            fi
+            local codex_checksum
+            codex_checksum=$(sha256sum "$codex_dl" | cut -d' ' -f1)
+            info "Codex SHA-256: $codex_checksum"
+            printf 'ARG CODEX_CHECKSUM=%s\n' "$codex_checksum" >> "$dockerfile"
             codex_get_dockerfile_install >> "$dockerfile"
             ;;
         opencode)
-            # OpenCode uses official image as base
-            opencode_get_dockerfile >> "$dockerfile"
+            # OpenCode uses official image as base (versioned tag)
+            local oc_version
+            oc_version=$(opencode_get_latest_version 2>/dev/null) || oc_version=""
+            opencode_get_dockerfile "$oc_version" >> "$dockerfile"
             # Copy entrypoint to build context
             cp "${SCRIPT_DIR}/build/docker-entrypoint-opencode" "$build_context/"
             chmod +x "$build_context/docker-entrypoint-opencode"
@@ -218,9 +245,12 @@ build_agent_core_image() {
             ;;
     esac
 
-    # Add label
+    # Add labels
     printf '\nLABEL agentbox.agent="%s"\n' "$agent" >> "$dockerfile"
     printf 'LABEL agentbox.version="%s"\n' "$AGENTBOX_VERSION" >> "$dockerfile"
+    if [[ -n "$latest_agent_version" ]]; then
+        printf 'LABEL agentbox.agent.version="%s"\n' "$latest_agent_version" >> "$dockerfile"
+    fi
 
     local build_args=()
 
@@ -242,18 +272,7 @@ build_agent_core_image() {
     # Save the installed version
     local version_file
     version_file=$(get_agent_config_dir "$agent")/installed_version
-    local version="unknown"
-    case "$agent" in
-        claude)
-            version=$(claude_get_latest_version 2>/dev/null) || version="unknown"
-            ;;
-        codex)
-            version=$(codex_get_latest_version 2>/dev/null) || version="unknown"
-            ;;
-        opencode)
-            version=$(opencode_get_latest_version 2>/dev/null) || version="unknown"
-            ;;
-    esac
+    local version="${latest_agent_version:-unknown}"
     mkdir -p "$(dirname "$version_file")"
     printf '%s' "$version" > "$version_file"
 
@@ -373,9 +392,14 @@ build_agent_project_image() {
         local profile
         while IFS= read -r profile; do
             if [[ -n "$profile" ]] && [[ ! "$profile" =~ ^# ]]; then
+                if ! profile_exists "$profile"; then
+                    error "Unknown profile '$profile' in $profiles_file. Remove it or run 'agentbox <agent> profile list' for valid names."
+                fi
                 local profile_fn="get_profile_${profile//-/_}"
                 if type -t "$profile_fn" >/dev/null 2>&1; then
                     "$profile_fn" >> "$dockerfile"
+                else
+                    error "Profile '$profile' is missing installer implementation ($profile_fn)."
                 fi
             fi
         done < <(read_profile_section "$profiles_file" "profiles")

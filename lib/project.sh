@@ -104,6 +104,8 @@ get_container_name() {
 list_all_projects() {
     local projects_dir="$AGENTBOX_HOME/projects"
     local projects_found=0
+    local cmd
+    cmd=$(container_cmd)
 
     if [[ ! -d "$projects_dir" ]]; then
         return 1
@@ -135,7 +137,7 @@ list_all_projects() {
 
         for agent in claude codex opencode; do
             local image_name="agentbox-${agent}-${parent_name}"
-            if docker image inspect "$image_name" >/dev/null 2>&1; then
+            if $cmd image inspect "$image_name" >/dev/null 2>&1; then
                 if [[ -n "$agents_with_images" ]]; then
                     agents_with_images+=", "
                 fi

@@ -63,13 +63,6 @@ fi
 # Per-project agentbox config directory
 PROJECT_AGENTBOX_DIR="${PROJECT_DIR}/.agentbox"
 
-# Parent directory for project configs in agentbox home
-get_project_parent_dir() {
-    local project_hash
-    project_hash=$(generate_hash "$PROJECT_DIR")
-    printf '%s/projects/%s' "$AGENTBOX_HOME" "$project_hash"
-}
-
 # ============================================================================
 # DOCKER CONFIGURATION
 # ============================================================================
@@ -80,8 +73,8 @@ DOCKER_IMAGE_PREFIX="agentbox"
 # Base image name
 DOCKER_BASE_IMAGE="${DOCKER_IMAGE_PREFIX}-base"
 
-# Container username inside Docker
-CONTAINER_USER="claude"
+# Container username inside Docker (must match USERNAME build arg in Dockerfile.base)
+CONTAINER_USER="user"
 CONTAINER_UID=1000
 CONTAINER_GID=1000
 
@@ -90,7 +83,7 @@ CONTAINER_GID=1000
 # ============================================================================
 
 if [[ -z "${AGENTBOX_VERSION:-}" ]]; then
-    AGENTBOX_VERSION="3.0.0"
+    AGENTBOX_VERSION="3.2.0"
 fi
 
 # ============================================================================
@@ -103,5 +96,3 @@ export PROJECT_DIR PROJECT_AGENTBOX_DIR
 export DOCKER_IMAGE_PREFIX DOCKER_BASE_IMAGE
 export CONTAINER_USER CONTAINER_UID CONTAINER_GID
 export AGENTBOX_VERSION
-
-export -f get_project_parent_dir

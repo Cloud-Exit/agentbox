@@ -21,10 +21,10 @@ codex_get_binary_name() {
 
     case "$arch" in
         x86_64)
-            printf 'codex-x86_64-unknown-linux-gnu.tar.gz'
+            printf 'codex-x86_64-unknown-linux-musl.tar.gz'
             ;;
         aarch64|arm64)
-            printf 'codex-aarch64-unknown-linux-gnu.tar.gz'
+            printf 'codex-aarch64-unknown-linux-musl.tar.gz'
             ;;
         *)
             printf '' >&2
@@ -40,15 +40,17 @@ codex_get_binary_name() {
 # Get the installed Codex version from a Docker image
 codex_get_installed_version() {
     local image_name="${1:-agentbox-codex-core}"
+    local cmd
+    cmd=$(container_cmd 2>/dev/null || printf 'podman')
 
-    if ! docker image inspect "$image_name" >/dev/null 2>&1; then
+    if ! $cmd image inspect "$image_name" >/dev/null 2>&1; then
         printf ''
         return 1
     fi
 
     # Run codex --version in the image
     local version
-    version=$(docker run --rm "$image_name" codex --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    version=$($cmd run --rm "$image_name" codex --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
     printf '%s' "$version"
 }
 
@@ -97,46 +99,38 @@ codex_get_download_url() {
         version=$(codex_get_latest_version) || return 1
     fi
 
-    printf 'https://github.com/%s/releases/download/v%s/%s' "$CODEX_GITHUB_REPO" "$version" "$binary_name"
+    printf 'https://github.com/%s/releases/download/%s/%s' "$CODEX_GITHUB_REPO" "$version" "$binary_name"
 }
 
 # ============================================================================
 # DOCKERFILE GENERATION
 # ============================================================================
 
-# Generate the Codex-specific Dockerfile installation commands
+# Generate the Codex-specific Dockerfile installation commands.
+# The tarball is pre-downloaded by the host build script (image.sh) and
+# passed into the build context so we can verify its SHA-256 checksum
+# before installing.
 codex_get_dockerfile_install() {
-    local arch
-    arch=$(detect_arch)
-
     local binary_name
-    case "$arch" in
-        x86_64)
-            binary_name="codex-x86_64-unknown-linux-musl.tar.gz"
-            ;;
-        arm64)
-            binary_name="codex-aarch64-unknown-linux-musl.tar.gz"
-            ;;
-        *)
-            binary_name="codex-x86_64-unknown-linux-musl.tar.gz"
-            ;;
-    esac
+    binary_name=$(codex_get_binary_name) || error "Unsupported architecture for Codex"
 
     # Binary name inside tarball (without .tar.gz extension)
     local binary_inside="${binary_name%.tar.gz}"
 
     cat << 'DOCKERFILE'
-# Install Codex binary (base image already runs as non-root user)
+# Install Codex binary with SHA-256 verification
 ARG CODEX_VERSION
+ARG CODEX_CHECKSUM
 DOCKERFILE
     cat << EOF
-RUN mkdir -p \$HOME/.local/bin && \\
-    wget -O /tmp/codex.tar.gz "https://github.com/openai/codex/releases/download/\${CODEX_VERSION}/${binary_name}" && \\
+COPY ${binary_name} /tmp/codex.tar.gz
+RUN echo "\${CODEX_CHECKSUM}  /tmp/codex.tar.gz" | sha256sum -c - && \\
+    mkdir -p \$HOME/.local/bin && \\
     tar -xzf /tmp/codex.tar.gz -C /tmp && \\
     mv /tmp/${binary_inside} \$HOME/.local/bin/codex && \\
     chmod +x \$HOME/.local/bin/codex && \\
     rm -f /tmp/codex.tar.gz && \\
-    codex --version
+    \$HOME/.local/bin/codex --version
 EOF
 }
 

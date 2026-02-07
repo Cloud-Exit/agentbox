@@ -7,7 +7,7 @@
 # OPENCODE AGENT CONFIGURATION
 # ============================================================================
 
-OPENCODE_GITHUB_REPO="opencode-ai/opencode"
+OPENCODE_GITHUB_REPO="anomalyco/opencode"
 
 # ============================================================================
 # ARCHITECTURE DETECTION
@@ -39,15 +39,17 @@ opencode_get_binary_name() {
 # Get the installed OpenCode version from a Docker image
 opencode_get_installed_version() {
     local image_name="${1:-agentbox-opencode-core}"
+    local cmd
+    cmd=$(container_cmd 2>/dev/null || printf 'podman')
 
-    if ! docker image inspect "$image_name" >/dev/null 2>&1; then
+    if ! $cmd image inspect "$image_name" >/dev/null 2>&1; then
         printf ''
         return 1
     fi
 
     # Run opencode --version in the image
     local version
-    version=$(docker run --rm "$image_name" opencode --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
+    version=$($cmd run --rm "$image_name" opencode --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || true)
     printf '%s' "$version"
 }
 
@@ -104,10 +106,12 @@ opencode_get_download_url() {
 # ============================================================================
 
 # Generate the full OpenCode Dockerfile (uses official image as base)
+# Usage: opencode_get_dockerfile [version]
 opencode_get_dockerfile() {
-    cat << 'DOCKERFILE'
+    local oc_tag="${1:-latest}"
+    cat << DOCKERFILE
 # Use official OpenCode image as base
-FROM ghcr.io/anomalyco/opencode:latest
+FROM ghcr.io/anomalyco/opencode:${oc_tag}
 
 # add user "user" with UID 1000
 # This is required for rootless operation and to ensure config files are owned by non-root user
@@ -117,11 +121,11 @@ RUN adduser --disabled-password --gecos "" --home "/home/user" user && \
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     HOME=/home/user \
-    PATH="/home/user/.local/bin:/usr/local/bin:${PATH}"
+    PATH="/home/user/.local/bin:/usr/local/bin:\${PATH}"
 
 # Install base packages from tools.txt
 COPY tools.txt /tmp/tools.txt
-RUN apk add --no-cache $(grep -v '^\s*#' /tmp/tools.txt | grep -v '^\s*$' | tr '\n' ' ') && rm /tmp/tools.txt
+RUN apk add --no-cache \$(grep -v '^\s*#' /tmp/tools.txt | grep -v '^\s*$' | tr '\n' ' ') && rm /tmp/tools.txt
 
 # Stay rootless-only: no package-manager installs and no privilege escalation.
 COPY docker-entrypoint-opencode /usr/local/bin/docker-entrypoint
@@ -135,7 +139,7 @@ DOCKERFILE
 
 # Legacy function for compatibility
 opencode_get_dockerfile_install() {
-    opencode_get_dockerfile
+    opencode_get_dockerfile "$@"
 }
 
 # ============================================================================

@@ -122,6 +122,8 @@ set_config_value() {
 
     local temp_file
     temp_file=$(mktemp)
+    trap 'rm -f "$temp_file"' RETURN
+
     local in_section=false
     local key_found=false
     local section_found=false
@@ -164,6 +166,7 @@ set_config_value() {
     fi
 
     mv "$temp_file" "$file"
+    trap - RETURN
 }
 
 # ============================================================================
@@ -199,11 +202,18 @@ add_project_profile() {
     local profiles_dir="${PROJECT_AGENTBOX_DIR}/${agent}"
     local profiles_file="${profiles_dir}/profiles.ini"
 
+    if [[ -z "$profile" ]]; then
+        error "Usage: agentbox <agent> profile add <name>"
+    fi
+    if ! profile_exists "$profile"; then
+        error "Unknown profile: $profile. Run 'agentbox <agent> profile list' to see valid profiles."
+    fi
+
     mkdir -p "$profiles_dir"
 
     # Check if profile already exists
     if [[ -f "$profiles_file" ]]; then
-        if grep -q "^${profile}$" "$profiles_file" 2>/dev/null; then
+        if grep -Fqx -- "$profile" "$profiles_file" 2>/dev/null; then
             return 0  # Already exists
         fi
     fi
@@ -222,15 +232,21 @@ remove_project_profile() {
     local profile="$2"
     local profiles_file="${PROJECT_AGENTBOX_DIR}/${agent}/profiles.ini"
 
+    if [[ -z "$profile" ]]; then
+        error "Usage: agentbox <agent> profile remove <name>"
+    fi
+
     if [[ ! -f "$profiles_file" ]]; then
         return 0
     fi
 
     local temp_file
     temp_file=$(mktemp)
+    trap 'rm -f "$temp_file"' RETURN
 
-    grep -v "^${profile}$" "$profiles_file" > "$temp_file" 2>/dev/null || true
+    grep -Fvx -- "$profile" "$profiles_file" > "$temp_file" 2>/dev/null || true
     mv "$temp_file" "$profiles_file"
+    trap - RETURN
 }
 
 # ============================================================================
@@ -262,20 +278,49 @@ save_default_flags() {
 # PROFILE PACKAGES AND DESCRIPTIONS
 # ============================================================================
 
+# Print available profiles as "name:description" lines.
+list_available_profiles() {
+    cat << 'EOF'
+core:Compatibility alias for base profile
+base:Base development tools (git, vim, curl)
+build-tools:Build toolchain helpers (cmake, autoconf, libtool)
+shell:Shell and file transfer utilities
+networking:Network diagnostics and tooling
+c:C/C++ toolchain (gcc, clang, cmake, gdb)
+node:Node.js runtime with npm and common JS tooling
+javascript:Compatibility alias for node profile
+python:Python 3 with pip and venv
+rust:Rust toolchain (rust + cargo via apk)
+go:Go runtime (latest stable for host arch, checksum verified)
+java:OpenJDK with Maven and Gradle
+ruby:Ruby runtime with bundler
+php:PHP runtime with composer
+database:Database CLI clients (Postgres, MySQL/MariaDB, SQLite, Redis)
+devops:Container/orchestration tooling (docker CLI, kubectl, helm, terraform)
+web:Web server/testing tools (nginx, httpie)
+embedded:Embedded systems base tooling
+datascience:Data science tooling
+security:Security diagnostics (nmap, tcpdump, netcat)
+ml:Machine learning helpers
+flutter:Flutter SDK (stable, checksum verified)
+EOF
+}
+
 # Get packages for a profile
 get_profile_packages() {
     case "$1" in
         core) printf 'gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev tmux' ;;
+        base) printf 'gcc g++ make git pkgconf openssl-dev libffi-dev zlib-dev tmux' ;;
         build-tools) printf 'cmake samurai autoconf automake libtool' ;;
         shell) printf 'rsync openssh-client mandoc gnupg file' ;;
         networking) printf 'iptables ipset iproute2 bind-tools' ;;
         c) printf 'gdb valgrind clang clang-extra-tools cppcheck doxygen boost-dev ncurses-dev' ;;
-        rust) printf '' ;;
+        node) printf 'nodejs npm' ;;
+        javascript) printf 'nodejs npm' ;;
         python) printf '' ;;
+        rust) printf 'rust cargo' ;;
         go) printf '' ;;
-        flutter) printf '' ;;
-        javascript) printf '' ;;
-        java) printf '' ;;
+        java) printf 'openjdk17-jdk maven gradle' ;;
         ruby) printf 'ruby ruby-dev readline-dev yaml-dev sqlite-dev sqlite libxml2-dev libxslt-dev curl-dev' ;;
         php) printf 'php83 php83-cli php83-fpm php83-mysqli php83-pgsql php83-sqlite3 php83-curl php83-gd php83-mbstring php83-xml php83-zip composer' ;;
         database) printf 'postgresql16-client mariadb-client sqlite redis' ;;
@@ -285,25 +330,26 @@ get_profile_packages() {
         datascience) printf 'R' ;;
         security) printf 'nmap tcpdump netcat-openbsd' ;;
         ml) printf '' ;;
+        flutter) printf '' ;;
         *) printf '' ;;
     esac
 }
 
 # Get all available profile names
 get_all_profile_names() {
-    printf 'core build-tools shell networking c rust python go flutter javascript java ruby php database devops web embedded datascience security ml'
+    list_available_profiles | cut -d: -f1 | tr '\n' ' ' | sed 's/[[:space:]]\+$//'
+}
+
+# Get a profile description
+get_profile_description() {
+    local profile="$1"
+    list_available_profiles | awk -F: -v p="$profile" '$1 == p { print substr($0, index($0, ":") + 1); found=1 } END { if (!found) print "Unknown profile" }'
 }
 
 # Check if a profile exists
 profile_exists() {
     local profile="$1"
-    local p
-    for p in $(get_all_profile_names); do
-        if [[ "$p" == "$profile" ]]; then
-            return 0
-        fi
-    done
-    return 1
+    list_available_profiles | cut -d: -f1 | grep -Fxq -- "$profile"
 }
 
 # ============================================================================
@@ -311,8 +357,12 @@ profile_exists() {
 # ============================================================================
 
 get_profile_core() {
+    get_profile_base
+}
+
+get_profile_base() {
     local packages
-    packages=$(get_profile_packages "core")
+    packages=$(get_profile_packages "base")
     if [[ -n "$packages" ]]; then
         printf 'RUN apk add --no-cache %s\n' "$packages"
     fi
@@ -351,12 +401,11 @@ get_profile_c() {
 }
 
 get_profile_rust() {
-    cat << 'EOF'
-USER user
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/home/user/.cargo/bin:$PATH"
-USER root
-EOF
+    local packages
+    packages=$(get_profile_packages "rust")
+    if [[ -n "$packages" ]]; then
+        printf 'RUN apk add --no-cache %s\n' "$packages"
+    fi
 }
 
 get_profile_python() {
@@ -370,46 +419,67 @@ EOF
 
 get_profile_go() {
     cat << 'EOF'
-RUN wget -O go.tar.gz https://golang.org/dl/go1.22.0.linux-amd64.tar.gz && \
-    tar -C /usr/local -xzf go.tar.gz && \
-    rm go.tar.gz
+RUN set -e && \
+    case "$(uname -m)" in \
+        x86_64|amd64) GO_ARCH="amd64" ;; \
+        aarch64|arm64) GO_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    GO_VERSION="$(wget -qO- https://go.dev/VERSION?m=text | head -n1)" && \
+    GO_TARBALL="${GO_VERSION}.linux-${GO_ARCH}.tar.gz" && \
+    GO_SHA256="$(wget -qO- https://go.dev/dl/?mode=json | jq -r --arg f "$GO_TARBALL" '.[0].files[] | select(.filename == $f) | .sha256')" && \
+    test -n "$GO_SHA256" && \
+    wget -q -O /tmp/go.tar.gz "https://go.dev/dl/${GO_TARBALL}" && \
+    echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - && \
+    tar -C /usr/local -xzf /tmp/go.tar.gz && \
+    rm -f /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:$PATH"
 EOF
 }
 
 get_profile_flutter() {
     cat << 'EOF'
-USER user
-RUN curl -fsSL https://fvm.app/install.sh | bash
-ENV PATH="/usr/local/bin:$PATH"
-RUN fvm install stable && fvm global stable
-ENV PATH="/home/user/fvm/default/bin:$PATH"
-USER root
+RUN set -e && \
+    case "$(uname -m)" in \
+        x86_64|amd64) FLUTTER_ARCH="x64" ;; \
+        aarch64|arm64) FLUTTER_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac && \
+    RELEASES_JSON="$(wget -qO- https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json)" && \
+    STABLE_HASH="$(printf '%s' "$RELEASES_JSON" | jq -r '.current_release.stable')" && \
+    FLUTTER_ARCHIVE="$(printf '%s' "$RELEASES_JSON" | jq -r --arg h "$STABLE_HASH" --arg a "$FLUTTER_ARCH" '.releases[] | select(.hash == $h and .dart_sdk_arch == $a) | .archive' | head -n1)" && \
+    FLUTTER_SHA256="$(printf '%s' "$RELEASES_JSON" | jq -r --arg h "$STABLE_HASH" --arg a "$FLUTTER_ARCH" '.releases[] | select(.hash == $h and .dart_sdk_arch == $a) | .sha256' | head -n1)" && \
+    test -n "$FLUTTER_ARCHIVE" && \
+    test -n "$FLUTTER_SHA256" && \
+    wget -q -O /tmp/flutter.tar.xz "https://storage.googleapis.com/flutter_infra_release/releases/${FLUTTER_ARCHIVE}" && \
+    echo "${FLUTTER_SHA256}  /tmp/flutter.tar.xz" | sha256sum -c - && \
+    rm -rf /opt/flutter && \
+    mkdir -p /opt && \
+    tar -xJf /tmp/flutter.tar.xz -C /opt && \
+    rm -f /tmp/flutter.tar.xz && \
+    ln -sf /opt/flutter/bin/flutter /usr/local/bin/flutter && \
+    ln -sf /opt/flutter/bin/dart /usr/local/bin/dart
+ENV PATH="/opt/flutter/bin:$PATH"
 EOF
 }
 
 get_profile_javascript() {
     cat << 'EOF'
-# JavaScript profile - uses NVM from base image
-USER user
-RUN bash -c "source $NVM_DIR/nvm.sh && npm install -g typescript eslint prettier yarn pnpm"
-USER root
+RUN apk add --no-cache nodejs npm && \
+    npm install -g typescript eslint prettier yarn pnpm
 EOF
 }
 
+get_profile_node() {
+    get_profile_javascript
+}
+
 get_profile_java() {
-    cat << 'EOF'
-USER user
-RUN curl -s "https://get.sdkman.io?ci=true" | bash
-RUN bash -c "source $HOME/.sdkman/bin/sdkman-init.sh && sdk install java && sdk install maven && sdk install gradle"
-USER root
-RUN for tool in java javac jar; do \
-        ln -sf /home/user/.sdkman/candidates/java/current/bin/$tool /usr/local/bin/$tool; \
-    done && \
-    ln -sf /home/user/.sdkman/candidates/maven/current/bin/mvn /usr/local/bin/mvn && \
-    ln -sf /home/user/.sdkman/candidates/gradle/current/bin/gradle /usr/local/bin/gradle
-ENV JAVA_HOME="/home/user/.sdkman/candidates/java/current"
-EOF
+    local packages
+    packages=$(get_profile_packages "java")
+    if [[ -n "$packages" ]]; then
+        printf 'RUN apk add --no-cache %s\n' "$packages"
+    fi
 }
 
 get_profile_ruby() {
@@ -488,9 +558,9 @@ export -f init_agentbox_config init_project_config
 export -f get_config_value set_config_value
 export -f get_project_profiles add_project_profile remove_project_profile
 export -f get_default_flags save_default_flags
-export -f get_profile_packages get_all_profile_names profile_exists
-export -f get_profile_core get_profile_build_tools get_profile_shell get_profile_networking
+export -f list_available_profiles get_profile_packages get_all_profile_names get_profile_description profile_exists
+export -f get_profile_base get_profile_core get_profile_build_tools get_profile_shell get_profile_networking
 export -f get_profile_c get_profile_rust get_profile_python get_profile_go
-export -f get_profile_flutter get_profile_javascript get_profile_java get_profile_ruby
+export -f get_profile_flutter get_profile_javascript get_profile_node get_profile_java get_profile_ruby
 export -f get_profile_php get_profile_database get_profile_devops get_profile_web
 export -f get_profile_embedded get_profile_datascience get_profile_security get_profile_ml
