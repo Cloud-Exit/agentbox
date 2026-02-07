@@ -74,7 +74,7 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	ui.Infof("Building %s core image with %s...", agentName, cmd)
 
 	buildCtx := filepath.Join(config.Cache, "build-"+agentName)
-	os.MkdirAll(buildCtx, 0755)
+	_ = os.MkdirAll(buildCtx, 0755)
 
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 
@@ -84,7 +84,7 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		if err != nil {
 			return err
 		}
-		os.WriteFile(dockerfilePath, []byte(df), 0644)
+		_ = os.WriteFile(dockerfilePath, []byte(df), 0644)
 
 	case "codex":
 		codexAgent := a.(*agent.Codex)
@@ -111,7 +111,7 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		df := fmt.Sprintf("FROM exitbox-base\n\nARG CODEX_VERSION=%s\nARG CODEX_CHECKSUM=%s\n", version, checksum)
 		install, _ := a.GetDockerfileInstall(buildCtx)
 		df += install
-		os.WriteFile(dockerfilePath, []byte(df), 0644)
+		_ = os.WriteFile(dockerfilePath, []byte(df), 0644)
 
 	case "opencode":
 		ocAgent := a.(*agent.OpenCode)
@@ -138,7 +138,7 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		df := fmt.Sprintf("FROM exitbox-base\n\nARG OPENCODE_VERSION=%s\nARG OPENCODE_CHECKSUM=%s\n", version, checksum)
 		install, _ := a.GetDockerfileInstall(buildCtx)
 		df += install
-		os.WriteFile(dockerfilePath, []byte(df), 0644)
+		_ = os.WriteFile(dockerfilePath, []byte(df), 0644)
 	}
 
 	// Add labels
@@ -167,12 +167,12 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 
 	// Save installed version
 	versionFile := filepath.Join(config.AgentDir(agentName), "installed_version")
-	os.MkdirAll(filepath.Dir(versionFile), 0755)
+	_ = os.MkdirAll(filepath.Dir(versionFile), 0755)
 	v := latestVersion
 	if v == "" {
 		v = "unknown"
 	}
-	os.WriteFile(versionFile, []byte(v), 0644)
+	_ = os.WriteFile(versionFile, []byte(v), 0644)
 
 	ui.Successf("%s core image built (version: %s)", agentName, v)
 	return nil

@@ -76,7 +76,7 @@ func Init(path string) error {
 	}
 
 	// Create local .exitbox directory in project
-	os.MkdirAll(filepath.Join(path, ".exitbox"), 0755)
+	_ = os.MkdirAll(filepath.Join(path, ".exitbox"), 0755)
 	return nil
 }
 

@@ -46,7 +46,7 @@ var cleanCmd = &cobra.Command{
 		switch mode {
 		case "unused":
 			ui.Info("Removing unused exitbox images...")
-			exec.Command(rtCmd, "image", "prune", "-f", "--filter", "label=exitbox.version").Run()
+			_ = exec.Command(rtCmd, "image", "prune", "-f", "--filter", "label=exitbox.version").Run()
 			ui.Success("Cleanup complete")
 
 		case "all":
@@ -54,7 +54,7 @@ var cleanCmd = &cobra.Command{
 			// List and remove all exitbox images
 			out, _ := exec.Command(rtCmd, "images", "--filter", "reference=exitbox-*", "--format", "{{.Repository}}:{{.Tag}}").Output()
 			for _, img := range splitLines(string(out)) {
-				exec.Command(rtCmd, "rmi", "-f", img).Run()
+				_ = exec.Command(rtCmd, "rmi", "-f", img).Run()
 			}
 			ui.Success("Cleanup complete")
 
@@ -62,7 +62,7 @@ var cleanCmd = &cobra.Command{
 			ui.Info("Stopping all exitbox containers...")
 			out, _ := exec.Command(rtCmd, "ps", "--filter", "name=exitbox-", "--format", "{{.ID}}").Output()
 			for _, id := range splitLines(string(out)) {
-				exec.Command(rtCmd, "stop", id).Run()
+				_ = exec.Command(rtCmd, "stop", id).Run()
 			}
 			network.CleanupSquidIfUnused(rt)
 			ui.Success("Cleanup complete")

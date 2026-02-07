@@ -72,12 +72,12 @@ var uninstallCmd = &cobra.Command{
 			cfg := config.LoadOrDefault()
 			for _, name := range agent.AgentNames {
 				cfg.SetAgentEnabled(name, false)
-				os.RemoveAll(config.AgentDir(name))
+				_ = os.RemoveAll(config.AgentDir(name))
 			}
 			_ = config.SaveConfig(cfg)
 
 			// Remove cache
-			os.RemoveAll(config.Cache)
+			_ = os.RemoveAll(config.Cache)
 
 			ui.Success("ExitBox uninstalled successfully.")
 			return

@@ -68,7 +68,7 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	ui.Infof("Building %s project image with %s...", agentName, cmd)
 
 	buildCtx := filepath.Join(config.Cache, "build-"+agentName+"-project")
-	os.MkdirAll(buildCtx, 0755)
+	_ = os.MkdirAll(buildCtx, 0755)
 
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 	var df strings.Builder
@@ -104,7 +104,7 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	// Add label
 	fmt.Fprintf(&df, "\nLABEL exitbox.profiles.hash=\"%s\"\n", hashParts)
 
-	os.WriteFile(dockerfilePath, []byte(df.String()), 0644)
+	_ = os.WriteFile(dockerfilePath, []byte(df.String()), 0644)
 
 	args := buildArgs(cmd)
 	args = append(args,

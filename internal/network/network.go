@@ -211,7 +211,7 @@ func writeSquidConfig(rt container.Runtime, extraURLs []string) error {
 
 	content := GenerateSquidConfig(subnet, domains, extraURLs)
 	configFile := filepath.Join(config.Cache, "squid.conf")
-	os.MkdirAll(filepath.Dir(configFile), 0755)
+	_ = os.MkdirAll(filepath.Dir(configFile), 0755)
 	return os.WriteFile(configFile, []byte(content), 0644)
 }
 

@@ -45,7 +45,7 @@ func AddProjectProfile(agent, projectDir, name string) error {
 	}
 
 	path := ProjectProfilesPath(agent, projectDir)
-	os.MkdirAll(filepath.Dir(path), 0755)
+	_ = os.MkdirAll(filepath.Dir(path), 0755)
 
 	pp, _ := config.LoadProjectProfiles(path)
 	if pp == nil {

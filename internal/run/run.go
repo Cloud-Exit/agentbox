@@ -111,7 +111,7 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 
 	// Agent-specific config mounts
 	agentCfgDir := config.AgentDir(opts.Agent)
-	os.MkdirAll(agentCfgDir, 0755)
+	_ = os.MkdirAll(agentCfgDir, 0755)
 
 	mounts := resolveAgentMounts(opts.Agent, agentCfgDir)
 	args = append(args, mounts...)
@@ -238,13 +238,13 @@ func resolveAgentMounts(agent, cfgDir string) []string {
 
 func ensureDir(parts ...string) string {
 	p := filepath.Join(parts...)
-	os.MkdirAll(p, 0755)
+	_ = os.MkdirAll(p, 0755)
 	return p
 }
 
 func ensureFile(parts ...string) string {
 	p := filepath.Join(parts...)
-	os.MkdirAll(filepath.Dir(p), 0755)
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
 	if _, err := os.Stat(p); os.IsNotExist(err) {
 		_ = os.WriteFile(p, nil, 0644)
 	}
@@ -259,7 +259,7 @@ func seedDirOnce(host, managed string) {
 	if err == nil && len(entries) > 0 {
 		return
 	}
-	os.MkdirAll(managed, 0755)
+	_ = os.MkdirAll(managed, 0755)
 	_ = exec.Command("cp", "-R", host+"/.", managed+"/").Run()
 }
 
@@ -270,10 +270,10 @@ func seedFileOnce(host, managed string) {
 	if _, err := os.Stat(managed); err == nil {
 		return
 	}
-	os.MkdirAll(filepath.Dir(managed), 0755)
+	_ = os.MkdirAll(filepath.Dir(managed), 0755)
 	data, err := os.ReadFile(host)
 	if err == nil {
-		os.WriteFile(managed, data, 0644)
+		_ = os.WriteFile(managed, data, 0644)
 	}
 }
 

@@ -48,12 +48,12 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 	ui.Infof("Building base image with %s...", cmd)
 
 	buildCtx := filepath.Join(config.Cache, "build")
-	os.MkdirAll(buildCtx, 0755)
+	_ = os.MkdirAll(buildCtx, 0755)
 
 	// Copy build files from embedded assets
-	os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), static.DockerfileBase, 0644)
-	os.WriteFile(filepath.Join(buildCtx, "docker-entrypoint"), static.DockerEntrypoint, 0755)
-	os.WriteFile(filepath.Join(buildCtx, ".dockerignore"), static.Dockerignore, 0644)
+	_ = os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), static.DockerfileBase, 0644)
+	_ = os.WriteFile(filepath.Join(buildCtx, "docker-entrypoint"), static.DockerEntrypoint, 0755)
+	_ = os.WriteFile(filepath.Join(buildCtx, ".dockerignore"), static.Dockerignore, 0644)
 
 	// Copy tools.txt and merge user tools
 	tools := string(static.DefaultTools)
@@ -61,7 +61,7 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 	if len(cfg.Tools.User) > 0 {
 		tools += "\n# User tools\n" + strings.Join(cfg.Tools.User, "\n") + "\n"
 	}
-	os.WriteFile(filepath.Join(buildCtx, "tools.txt"), []byte(tools), 0644)
+	_ = os.WriteFile(filepath.Join(buildCtx, "tools.txt"), []byte(tools), 0644)
 
 	// Append binary download steps for tools not available via apk
 	if len(cfg.Tools.Binaries) > 0 {

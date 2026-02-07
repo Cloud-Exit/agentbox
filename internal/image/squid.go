@@ -43,7 +43,7 @@ func BuildSquid(ctx context.Context, rt container.Runtime, force bool) error {
 	ui.Info("Building Squid proxy image...")
 
 	buildCtx := filepath.Join(config.Cache, "build-squid")
-	os.MkdirAll(buildCtx, 0755)
+	_ = os.MkdirAll(buildCtx, 0755)
 
 	dockerfile := fmt.Sprintf(`FROM alpine:3.21
 ARG EXITBOX_VERSION
@@ -53,7 +53,7 @@ LABEL exitbox.version="%s"
 CMD ["squid", "-N", "-d", "1", "-f", "/etc/squid/squid.conf"]
 `, Version)
 
-	os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), []byte(dockerfile), 0644)
+	_ = os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), []byte(dockerfile), 0644)
 
 	args := buildArgs(cmd)
 	args = append(args,
