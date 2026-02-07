@@ -53,7 +53,9 @@ LABEL exitbox.version="%s"
 CMD ["squid", "-N", "-d", "1", "-f", "/etc/squid/squid.conf"]
 `, Version)
 
-	_ = os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), []byte(dockerfile), 0644)
+	if err := os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), []byte(dockerfile), 0644); err != nil {
+		return fmt.Errorf("failed to write Dockerfile: %w", err)
+	}
 
 	args := buildArgs(cmd)
 	args = append(args,
@@ -62,7 +64,7 @@ CMD ["squid", "-N", "-d", "1", "-f", "/etc/squid/squid.conf"]
 		buildCtx,
 	)
 
-	if err := container.BuildInteractive(rt, args); err != nil {
+	if err := buildImage(rt, args, "Building Squid proxy image..."); err != nil {
 		return fmt.Errorf("failed to build Squid image: %w", err)
 	}
 

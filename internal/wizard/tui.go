@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/cloud-exit/exitbox/internal/config"
 )
 
 // Step identifies the current wizard step.
@@ -32,6 +33,7 @@ const (
 	stepLanguage
 	stepTools
 	stepAgents
+	stepSettings
 	stepReview
 	stepDone
 )
@@ -42,6 +44,8 @@ type State struct {
 	Languages      []string
 	ToolCategories []string
 	Agents         []string
+	AutoUpdate     bool
+	StatusBar      bool
 }
 
 // Model is the root bubbletea model for the wizard.
@@ -56,11 +60,81 @@ type Model struct {
 	confirmed bool
 }
 
-// NewModel creates a new wizard model.
+// NewModel creates a new wizard model with defaults.
 func NewModel() Model {
+	checked := make(map[string]bool)
+	// Default settings to on
+	checked["setting:auto_update"] = true
+	checked["setting:status_bar"] = true
 	return Model{
 		step:    stepWelcome,
-		checked: make(map[string]bool),
+		checked: checked,
+	}
+}
+
+// NewModelFromConfig creates a wizard model pre-populated from existing config.
+func NewModelFromConfig(cfg *config.Config) Model {
+	checked := make(map[string]bool)
+
+	// Pre-check roles
+	for _, r := range cfg.Roles {
+		checked["role:"+r] = true
+	}
+
+	// Pre-check agents
+	if cfg.Agents.Claude.Enabled {
+		checked["agent:claude"] = true
+	}
+	if cfg.Agents.Codex.Enabled {
+		checked["agent:codex"] = true
+	}
+	if cfg.Agents.OpenCode.Enabled {
+		checked["agent:opencode"] = true
+	}
+
+	// Pre-check tool categories from saved selections (or fall back to role inference)
+	if len(cfg.ToolCategories) > 0 {
+		for _, tc := range cfg.ToolCategories {
+			checked["tool:"+tc] = true
+		}
+	} else {
+		for _, roleName := range cfg.Roles {
+			if role := GetRole(roleName); role != nil {
+				for _, t := range role.ToolCategories {
+					checked["tool:"+t] = true
+				}
+			}
+		}
+	}
+
+	// Pre-check languages from saved profiles (or fall back to role inference)
+	if len(cfg.Profiles) > 0 {
+		profileSet := make(map[string]bool, len(cfg.Profiles))
+		for _, p := range cfg.Profiles {
+			profileSet[p] = true
+		}
+		for _, l := range AllLanguages {
+			if profileSet[l.Profile] {
+				checked["lang:"+l.Name] = true
+			}
+		}
+	} else {
+		for _, roleName := range cfg.Roles {
+			if role := GetRole(roleName); role != nil {
+				for _, l := range role.Languages {
+					checked["lang:"+l] = true
+				}
+			}
+		}
+	}
+
+	// Settings
+	checked["setting:auto_update"] = cfg.Settings.AutoUpdate
+	checked["setting:status_bar"] = cfg.Settings.StatusBar
+
+	return Model{
+		step:    stepWelcome,
+		checked: checked,
 	}
 }
 
@@ -99,6 +173,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateTools(msg)
 	case stepAgents:
 		return m.updateAgents(msg)
+	case stepSettings:
+		return m.updateSettings(msg)
 	case stepReview:
 		return m.updateReview(msg)
 	}
@@ -118,6 +194,8 @@ func (m Model) View() string {
 		return m.viewTools()
 	case stepAgents:
 		return m.viewAgents()
+	case stepSettings:
+		return m.viewSettings()
 	case stepReview:
 		return m.viewReview()
 	case stepDone:
@@ -134,6 +212,47 @@ func (m Model) Confirmed() bool { return m.confirmed }
 
 // Result returns the final wizard state.
 func (m Model) Result() State { return m.state }
+
+// wrapWords joins words with ", " and wraps to maxWidth, indenting
+// continuation lines with the given indent string.
+func wrapWords(words []string, indent string, maxWidth int) string {
+	if maxWidth <= 0 {
+		maxWidth = 80
+	}
+	if len(words) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	lineLen := len(indent)
+	b.WriteString(indent)
+
+	for i, w := range words {
+		seg := w
+		if i < len(words)-1 {
+			seg += ","
+		}
+		// +1 for the space before the word (except first on line)
+		needed := len(seg)
+		if lineLen > len(indent) {
+			needed++ // space separator
+		}
+
+		if lineLen+needed > maxWidth && lineLen > len(indent) {
+			b.WriteString("\n")
+			b.WriteString(indent)
+			lineLen = len(indent)
+		}
+
+		if lineLen > len(indent) {
+			b.WriteString(" ")
+			lineLen++
+		}
+		b.WriteString(seg)
+		lineLen += len(seg)
+	}
+	return b.String()
+}
 
 // --- Welcome Step ---
 
@@ -206,7 +325,7 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewRole() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 1/5 — What kind of developer are you?"))
+	b.WriteString(titleStyle.Render("Step 1/6 — What kind of developer are you?"))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Select all that apply. Space to toggle.\n"))
 	b.WriteString("\n")
@@ -220,11 +339,12 @@ func (m Model) viewRole() string {
 		if m.checked["role:"+role.Name] {
 			check = selectedStyle.Render("[x]")
 		}
-		name := role.Name
+		// Pad name to fixed width before styling to prevent layout shift
+		paddedName := fmt.Sprintf("%-15s", role.Name)
 		if m.cursor == i {
-			name = selectedStyle.Render(name)
+			paddedName = selectedStyle.Render(paddedName)
 		}
-		b.WriteString(fmt.Sprintf("%s%s %-15s %s\n", cursor, check, name, dimStyle.Render(role.Description)))
+		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedName, dimStyle.Render(role.Description)))
 	}
 
 	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
@@ -266,9 +386,9 @@ func (m Model) updateLanguage(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewLanguage() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 2/5 — Which languages do you use?"))
+	b.WriteString(titleStyle.Render("Step 2/6 — Which languages do you use?"))
 	b.WriteString("\n")
-	b.WriteString(subtitleStyle.Render("Pre-selected based on your role. Space to toggle.\n"))
+	b.WriteString(subtitleStyle.Render("These become your default profile, installed in all projects. Space to toggle.\n"))
 	b.WriteString("\n")
 
 	for i, lang := range AllLanguages {
@@ -280,11 +400,11 @@ func (m Model) viewLanguage() string {
 		if m.checked["lang:"+lang.Name] {
 			check = selectedStyle.Render("[x]")
 		}
-		name := lang.Name
+		paddedName := fmt.Sprintf("%-15s", lang.Name)
 		if m.cursor == i {
-			name = selectedStyle.Render(name)
+			paddedName = selectedStyle.Render(paddedName)
 		}
-		b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, check, name))
+		b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, check, paddedName))
 	}
 
 	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
@@ -326,7 +446,7 @@ func (m Model) updateTools(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewTools() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 3/5 — Which tool categories do you need?"))
+	b.WriteString(titleStyle.Render("Step 3/6 — Which tool categories do you need?"))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Pre-selected based on your role. Space to toggle.\n"))
 	b.WriteString("\n")
@@ -340,12 +460,16 @@ func (m Model) viewTools() string {
 		if m.checked["tool:"+cat.Name] {
 			check = selectedStyle.Render("[x]")
 		}
-		name := cat.Name
+		paddedName := fmt.Sprintf("%-15s", cat.Name)
 		if m.cursor == i {
-			name = selectedStyle.Render(name)
+			paddedName = selectedStyle.Render(paddedName)
 		}
-		pkgs := dimStyle.Render(strings.Join(cat.Packages, ", "))
-		b.WriteString(fmt.Sprintf("%s%s %-15s %s\n", cursor, check, name, pkgs))
+		// prefix: cursor(2) + check(3) + space(1) + name(15) + space(1) = 22 chars
+		wrapped := wrapWords(cat.Packages, "                      ", m.width)
+		// First line starts after the padded name, so trim leading indent
+		firstLine := strings.TrimLeft(wrapped, " ")
+		pkgs := dimStyle.Render(firstLine)
+		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedName, pkgs))
 	}
 
 	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
@@ -375,7 +499,7 @@ func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state.Agents = append(m.state.Agents, a.Name)
 				}
 			}
-			m.step = stepReview
+			m.step = stepSettings
 			m.cursor = 0
 		case "esc":
 			m.step = stepTools
@@ -387,7 +511,7 @@ func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewAgents() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 4/5 — Which agents do you want to enable?"))
+	b.WriteString(titleStyle.Render("Step 4/6 — Which agents do you want to enable?"))
 	b.WriteString("\n\n")
 
 	for i, agent := range AllAgents {
@@ -399,11 +523,76 @@ func (m Model) viewAgents() string {
 		if m.checked["agent:"+agent.Name] {
 			check = selectedStyle.Render("[x]")
 		}
-		name := agent.DisplayName
+		paddedName := fmt.Sprintf("%-18s", agent.DisplayName)
 		if m.cursor == i {
-			name = selectedStyle.Render(name)
+			paddedName = selectedStyle.Render(paddedName)
 		}
-		b.WriteString(fmt.Sprintf("%s%s %-18s %s\n", cursor, check, name, dimStyle.Render(agent.Description)))
+		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedName, dimStyle.Render(agent.Description)))
+	}
+
+	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+	return b.String()
+}
+
+// --- Settings Step ---
+
+var settingsOptions = []struct {
+	Key         string
+	Label       string
+	Description string
+}{
+	{"setting:auto_update", "Auto-update agents", "Check for new versions on every launch (slows down startup)"},
+	{"setting:status_bar", "Status bar", "Show a status bar with version and agent info during sessions"},
+}
+
+func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(settingsOptions)-1 {
+				m.cursor++
+			}
+		case " ", "x":
+			k := settingsOptions[m.cursor].Key
+			m.checked[k] = !m.checked[k]
+		case "enter":
+			m.state.AutoUpdate = m.checked["setting:auto_update"]
+			m.state.StatusBar = m.checked["setting:status_bar"]
+			m.step = stepReview
+			m.cursor = 0
+		case "esc":
+			m.step = stepAgents
+			m.cursor = 0
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewSettings() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Step 5/6 — Settings"))
+	b.WriteString("\n")
+	b.WriteString(subtitleStyle.Render("Space to toggle. Use 'exitbox rebuild <agent>' to update manually.\n"))
+	b.WriteString("\n")
+
+	for i, opt := range settingsOptions {
+		cursor := "  "
+		if m.cursor == i {
+			cursor = cursorStyle.Render("> ")
+		}
+		check := "[ ]"
+		if m.checked[opt.Key] {
+			check = selectedStyle.Render("[x]")
+		}
+		label := opt.Label
+		if m.cursor == i {
+			label = selectedStyle.Render(label)
+		}
+		b.WriteString(fmt.Sprintf("%s%s %-25s %s\n", cursor, check, label, dimStyle.Render(opt.Description)))
 	}
 
 	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
@@ -420,7 +609,7 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.step = stepDone
 			return m, tea.Quit
 		case "esc":
-			m.step = stepAgents
+			m.step = stepSettings
 			m.cursor = 0
 		case "q", "n":
 			m.cancelled = true
@@ -432,7 +621,7 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewReview() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 5/5 — Review your configuration"))
+	b.WriteString(titleStyle.Render("Step 6/6 — Review your configuration"))
 	b.WriteString("\n\n")
 
 	if len(m.state.Roles) > 0 {
@@ -468,14 +657,30 @@ func (m Model) viewReview() string {
 		b.WriteString(fmt.Sprintf("  Agents:     %s\n", dimStyle.Render("none")))
 	}
 
+	autoUpdateStr := successStyle.Render("yes")
+	if !m.state.AutoUpdate {
+		autoUpdateStr = dimStyle.Render("no")
+	}
+	statusBarStr := successStyle.Render("yes")
+	if !m.state.StatusBar {
+		statusBarStr = dimStyle.Render("no")
+	}
+	b.WriteString(fmt.Sprintf("  Auto-update:  %s\n", autoUpdateStr))
+	b.WriteString(fmt.Sprintf("  Status bar:   %s\n", statusBarStr))
+
 	profiles := ComputeProfiles(m.state.Roles, m.state.Languages)
 	if len(profiles) > 0 {
-		b.WriteString(fmt.Sprintf("\n  Profiles:   %s\n", dimStyle.Render(strings.Join(profiles, ", "))))
+		b.WriteString(fmt.Sprintf("\n  Default profile: %s\n", selectedStyle.Render(strings.Join(profiles, ", "))))
+		b.WriteString(dimStyle.Render("  (installed in all projects; override per-project with 'exitbox run <agent> profile')"))
+		b.WriteString("\n")
 	}
 
 	packages := ComputePackages(m.state.ToolCategories)
 	if len(packages) > 0 {
-		b.WriteString(fmt.Sprintf("  Packages:   %s\n", dimStyle.Render(strings.Join(packages, ", "))))
+		// "  Packages:   " = 14 chars indent
+		wrapped := wrapWords(packages, "              ", m.width)
+		firstLine := strings.TrimLeft(wrapped, " ")
+		b.WriteString(fmt.Sprintf("  Packages:   %s\n", dimStyle.Render(firstLine)))
 	}
 
 	b.WriteString("\n")

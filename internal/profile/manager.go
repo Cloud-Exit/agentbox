@@ -17,6 +17,7 @@
 package profile
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -33,7 +34,10 @@ func GetProjectProfiles(agent, projectDir string) ([]string, error) {
 	path := ProjectProfilesPath(agent, projectDir)
 	pp, err := config.LoadProjectProfiles(path)
 	if err != nil {
-		return nil, nil // no profiles configured
+		if os.IsNotExist(err) {
+			return nil, nil // normal: no profiles file
+		}
+		return nil, fmt.Errorf("failed to load profiles: %w", err)
 	}
 	return pp.Profiles, nil
 }
@@ -87,5 +91,5 @@ type InvalidProfileError struct {
 }
 
 func (e *InvalidProfileError) Error() string {
-	return "unknown profile: " + e.Name + ". Run 'exitbox <agent> profile list' for valid names."
+	return "unknown profile: " + e.Name + ". Run 'exitbox run <agent> profile list' for valid names."
 }

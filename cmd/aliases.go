@@ -34,7 +34,7 @@ var aliasesCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Println("# Agent aliases")
 		for _, name := range agent.AgentNames {
-			fmt.Printf("alias %s='exitbox %s'\n", name, name)
+			fmt.Printf("alias %s='exitbox run %s'\n", name, name)
 		}
 	},
 }

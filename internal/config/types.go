@@ -19,9 +19,11 @@ package config
 // Config is the top-level exitbox configuration (config.yaml).
 type Config struct {
 	Version  int            `yaml:"version"`
-	Roles    []string       `yaml:"roles,omitempty"`
-	Agents   AgentConfig    `yaml:"agents"`
-	Tools    ToolsConfig    `yaml:"tools"`
+	Roles          []string       `yaml:"roles,omitempty"`
+	Profiles       []string       `yaml:"profiles,omitempty"`
+	ToolCategories []string       `yaml:"tool_categories,omitempty"`
+	Agents         AgentConfig    `yaml:"agents"`
+	Tools          ToolsConfig    `yaml:"tools"`
 	Settings SettingsConfig `yaml:"settings"`
 }
 

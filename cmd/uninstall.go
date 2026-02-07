@@ -116,21 +116,27 @@ var uninstallCmd = &cobra.Command{
 }
 
 func removeAgentImages(rt container.Runtime, agentName string) {
-	// Remove core image
-	_ = rt.ImageRemove("exitbox-" + agentName + "-core")
-
-	// List and remove project images
-	_ = rt.ImageRemove("exitbox-" + agentName + "-*")
+	images, err := rt.ImageList("exitbox-" + agentName + "-*")
+	if err != nil {
+		ui.Warnf("Failed to list %s images: %v", agentName, err)
+		return
+	}
+	for _, img := range images {
+		_ = rt.ImageRemove(img)
+	}
 }
 
 func cleanImages(rt container.Runtime, mode string) {
 	switch mode {
 	case "all":
-		for _, name := range agent.AgentNames {
-			_ = rt.ImageRemove("exitbox-" + name + "-core")
+		images, err := rt.ImageList("exitbox-*")
+		if err != nil {
+			ui.Warnf("Failed to list exitbox images: %v", err)
+			return
 		}
-		_ = rt.ImageRemove("exitbox-base")
-		_ = rt.ImageRemove("exitbox-squid")
+		for _, img := range images {
+			_ = rt.ImageRemove(img)
+		}
 	}
 }
 

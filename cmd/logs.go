@@ -19,7 +19,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -109,11 +108,27 @@ var logsCmd = &cobra.Command{
 		}
 
 		fmt.Printf("==> %s <==\n", latest)
-		tail := exec.Command("tail", "-n", "200", latest)
-		tail.Stdout = os.Stdout
-		tail.Stderr = os.Stderr
-		_ = tail.Run()
+		printLastNLines(latest, 200)
 	},
+}
+
+func printLastNLines(path string, n int) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", path, err)
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	// Remove trailing empty line from final newline
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	for _, line := range lines {
+		fmt.Println(line)
+	}
 }
 
 func init() {

@@ -45,7 +45,7 @@ var enableCmd = &cobra.Command{
 		}
 
 		ui.Successf("%s enabled", agent.DisplayName(name))
-		ui.Infof("Run 'exitbox %s' to start using it", name)
+		ui.Infof("Run 'exitbox run %s' to start using it", name)
 	},
 }
 

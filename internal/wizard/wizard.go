@@ -24,9 +24,15 @@ import (
 )
 
 // Run executes the setup wizard TUI and writes config files on completion.
+// If existingCfg is non-nil, the wizard is pre-populated from it.
 // Returns nil on success, error if cancelled or write fails.
-func Run() error {
-	model := NewModel()
+func Run(existingCfg *config.Config) error {
+	var model Model
+	if existingCfg != nil {
+		model = NewModelFromConfig(existingCfg)
+	} else {
+		model = NewModel()
+	}
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	finalModel, err := p.Run()
@@ -46,10 +52,12 @@ func Run() error {
 }
 
 func applyResult(state State) error {
-	cfg := &config.Config{
-		Version: 1,
-		Roles:   state.Roles,
-	}
+	cfg := config.DefaultConfig()
+	cfg.Roles = state.Roles
+	cfg.Profiles = ComputeProfiles(state.Roles, state.Languages)
+	cfg.ToolCategories = state.ToolCategories
+	cfg.Settings.AutoUpdate = state.AutoUpdate
+	cfg.Settings.StatusBar = state.StatusBar
 
 	for _, name := range state.Agents {
 		cfg.SetAgentEnabled(name, true)

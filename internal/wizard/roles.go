@@ -83,6 +83,13 @@ var Roles = []Role{
 		ToolCategories: []string{"Build Tools", "Networking", "DevOps", "Shell Utils"},
 	},
 	{
+		Name:           "Kubernetes",
+		Description:    "Kubernetes development and operations",
+		Profiles:       []string{"kubernetes", "devops", "networking", "shell", "build-tools"},
+		Languages:      []string{"Go", "Python"},
+		ToolCategories: []string{"Build Tools", "Networking", "Kubernetes", "DevOps", "Shell Utils"},
+	},
+	{
 		Name:           "Data Science",
 		Description:    "Data analysis and machine learning",
 		Profiles:       []string{"python", "datascience", "database"},
@@ -131,9 +138,11 @@ var AllToolCategories = []ToolCategory{
 	{Name: "Shell Utils", Packages: []string{"rsync", "openssh-client", "mandoc", "gnupg", "file"}},
 	{Name: "Networking", Packages: []string{"iptables", "ipset", "iproute2", "bind-tools"}},
 	{Name: "Database", Packages: []string{"postgresql16-client", "mariadb-client", "sqlite", "redis"}},
-	{Name: "DevOps", Packages: []string{"docker-cli", "docker-cli-compose", "kubectl", "helm", "opentofu"}, Binaries: []Binary{
+	{Name: "Kubernetes", Packages: []string{"kubectl", "helm", "k9s", "kustomize"}, Binaries: []Binary{
 		{Name: "kind", URLPattern: "https://kind.sigs.k8s.io/dl/latest/kind-linux-{arch}"},
+		{Name: "kubeseal", URLPattern: "https://github.com/bitnami-labs/sealed-secrets/releases/latest/download/kubeseal-linux-{arch}"},
 	}},
+	{Name: "DevOps", Packages: []string{"docker-cli", "docker-cli-compose", "opentofu"}},
 	{Name: "Web", Packages: []string{"nginx", "apache2-utils", "httpie"}},
 	{Name: "Security", Packages: []string{"nmap", "tcpdump", "netcat-openbsd"}},
 }

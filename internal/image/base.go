@@ -18,6 +18,7 @@ package image
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,17 +33,35 @@ import (
 // Version is set from cmd package.
 var Version = "3.2.0"
 
+// SessionTools are extra packages requested via --tools for this build only.
+var SessionTools []string
+
+// ForceRebuild forces image rebuilds (from --update flag only).
+var ForceRebuild bool
+
+// AutoUpdate enables checking for new agent versions on launch.
+var AutoUpdate bool
+
 // BuildBase builds the exitbox-base image.
 func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 	imageName := "exitbox-base"
 	cmd := container.Cmd(rt)
 
-	if !force && rt.ImageExists(imageName) {
+	// Compute config hash for cache detection (tools, binaries, session tools)
+	cfg := config.LoadOrDefault()
+	configHash := computeConfigHash(cfg)
+
+	if !force && !ForceRebuild && rt.ImageExists(imageName) {
 		v, _ := rt.ImageInspect(imageName, `{{index .Config.Labels "exitbox.version"}}`)
-		if v == Version {
+		ch, _ := rt.ImageInspect(imageName, `{{index .Config.Labels "exitbox.config.hash"}}`)
+		if v == Version && ch == configHash {
 			return nil
 		}
-		ui.Infof("Base image version mismatch (%s != %s). Rebuilding...", v, Version)
+		if v != Version {
+			ui.Infof("Base image version mismatch (%s != %s). Rebuilding...", v, Version)
+		} else {
+			ui.Info("Configuration changed. Rebuilding base image...")
+		}
 	}
 
 	ui.Infof("Building base image with %s...", cmd)
@@ -51,21 +70,31 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 	_ = os.MkdirAll(buildCtx, 0755)
 
 	// Copy build files from embedded assets
-	_ = os.WriteFile(filepath.Join(buildCtx, "Dockerfile"), static.DockerfileBase, 0644)
-	_ = os.WriteFile(filepath.Join(buildCtx, "docker-entrypoint"), static.DockerEntrypoint, 0755)
-	_ = os.WriteFile(filepath.Join(buildCtx, ".dockerignore"), static.Dockerignore, 0644)
-
-	// Copy tools.txt and merge user tools
-	tools := string(static.DefaultTools)
-	cfg := config.LoadOrDefault()
-	if len(cfg.Tools.User) > 0 {
-		tools += "\n# User tools\n" + strings.Join(cfg.Tools.User, "\n") + "\n"
+	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
+	if err := os.WriteFile(dockerfilePath, static.DockerfileBase, 0644); err != nil {
+		return fmt.Errorf("failed to write Dockerfile: %w", err)
 	}
-	_ = os.WriteFile(filepath.Join(buildCtx, "tools.txt"), []byte(tools), 0644)
+	if err := os.WriteFile(filepath.Join(buildCtx, "docker-entrypoint"), static.DockerEntrypoint, 0755); err != nil {
+		return fmt.Errorf("failed to write entrypoint: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildCtx, ".dockerignore"), static.Dockerignore, 0644); err != nil {
+		return fmt.Errorf("failed to write .dockerignore: %w", err)
+	}
+
+	// Append user tools and session tools as extra apk install layer
+	userTools := cfg.Tools.User
+	if len(SessionTools) > 0 {
+		userTools = append(userTools, SessionTools...)
+	}
+	if len(userTools) > 0 {
+		extra := fmt.Sprintf("\n# User tools (from config)\nRUN apk add --no-cache %s\n", strings.Join(userTools, " "))
+		if err := appendToFile(dockerfilePath, extra); err != nil {
+			return fmt.Errorf("failed to append user tools to Dockerfile: %w", err)
+		}
+	}
 
 	// Append binary download steps for tools not available via apk
 	if len(cfg.Tools.Binaries) > 0 {
-		dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 		var extra string
 		for _, b := range cfg.Tools.Binaries {
 			extra += fmt.Sprintf("\n# Install %s (binary download)\n", b.Name)
@@ -74,7 +103,9 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 			extra += fmt.Sprintf("    curl -sL \"%s\" -o /usr/local/bin/%s && \\\n", url, b.Name)
 			extra += fmt.Sprintf("    chmod +x /usr/local/bin/%s\n", b.Name)
 		}
-		appendToFile(dockerfilePath, extra)
+		if err := appendToFile(dockerfilePath, extra); err != nil {
+			return fmt.Errorf("failed to append binary downloads to Dockerfile: %w", err)
+		}
 	}
 
 	args := buildArgs(cmd)
@@ -83,12 +114,13 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 		"--build-arg", fmt.Sprintf("GROUP_ID=%d", os.Getgid()),
 		"--build-arg", "USERNAME=user",
 		"--build-arg", fmt.Sprintf("EXITBOX_VERSION=%s", Version),
+		"--label", fmt.Sprintf("exitbox.config.hash=%s", configHash),
 		"-t", imageName,
 		"-f", filepath.Join(buildCtx, "Dockerfile"),
 		buildCtx,
 	)
 
-	if err := container.BuildInteractive(rt, args); err != nil {
+	if err := buildImage(rt, args, "Building base image..."); err != nil {
 		if len(cfg.Tools.User) > 0 {
 			ui.Warnf("User tools in config: %s", strings.Join(cfg.Tools.User, ", "))
 			ui.Warnf("If a package was not found, check your config: %s", config.ConfigFile())
@@ -101,6 +133,24 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 	return nil
 }
 
+// buildImage runs a container build, using a spinner in quiet mode or
+// full output in verbose mode. On failure in quiet mode, the captured
+// build output is printed to stderr.
+func buildImage(rt container.Runtime, args []string, label string) error {
+	if ui.Verbose {
+		return container.BuildInteractive(rt, args)
+	}
+	spin := ui.NewSpinner(label)
+	spin.Start()
+	output, err := container.BuildQuiet(rt, args)
+	spin.Stop()
+	if err != nil {
+		fmt.Fprint(os.Stderr, output)
+		return err
+	}
+	return nil
+}
+
 func buildArgs(cmd string) []string {
 	var args []string
 	if cmd == "podman" {
@@ -110,4 +160,17 @@ func buildArgs(cmd string) []string {
 		args = append(args, "--progress=auto")
 	}
 	return args
+}
+
+// computeConfigHash returns a short hash of config-dependent build inputs
+// (user tools, binaries, session tools) for cache invalidation.
+func computeConfigHash(cfg *config.Config) string {
+	var parts []string
+	parts = append(parts, cfg.Tools.User...)
+	for _, b := range cfg.Tools.Binaries {
+		parts = append(parts, b.Name+"="+b.URLPattern)
+	}
+	parts = append(parts, SessionTools...)
+	h := sha256.Sum256([]byte(strings.Join(parts, ",")))
+	return fmt.Sprintf("%x", h[:8])
 }

@@ -33,6 +33,3 @@ var DefaultAllowlistTxt []byte
 
 //go:embed config/allowlist.yaml
 var DefaultAllowlistYAML []byte
-
-//go:embed config/tools.txt
-var DefaultTools []byte

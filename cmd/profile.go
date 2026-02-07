@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
+	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/ui"
 	"github.com/spf13/cobra"
@@ -31,17 +32,32 @@ func newProfileListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List available profiles",
 		Run: func(cmd *cobra.Command, args []string) {
+			cfg := config.LoadOrDefault()
+			defaultSet := make(map[string]bool, len(cfg.Profiles))
+			for _, p := range cfg.Profiles {
+				defaultSet[p] = true
+			}
+
 			ui.LogoSmall()
 			fmt.Println()
 			ui.Cecho("Available Profiles:", ui.Cyan)
 			fmt.Println()
-			fmt.Printf("  %-15s %s\n", "PROFILE", "DESCRIPTION")
-			fmt.Printf("  %-15s %s\n", "───────", "───────────")
+			fmt.Printf("  %-15s %-10s %s\n", "PROFILE", "DEFAULT", "DESCRIPTION")
+			fmt.Printf("  %-15s %-10s %s\n", "───────", "───────", "───────────")
 			for _, p := range profile.All() {
-				fmt.Printf("  %-15s %s\n", p.Name, p.Description)
+				marker := ""
+				if defaultSet[p.Name] {
+					marker = "*"
+				}
+				fmt.Printf("  %-15s %-10s %s\n", p.Name, marker, p.Description)
 			}
 			fmt.Println()
-			fmt.Println("Add profiles with: exitbox <agent> profile add <name>")
+			if len(cfg.Profiles) > 0 {
+				fmt.Println("  * = default profile (configured via 'exitbox setup')")
+				fmt.Println()
+			}
+			fmt.Println("Add per-project profiles with: exitbox run <agent> profile add <name>")
+			fmt.Println("Change default profiles with:  exitbox setup")
 			fmt.Println()
 		},
 	}
@@ -58,7 +74,7 @@ func newProfileAddCmd(agentName string) *cobra.Command {
 				ui.Errorf("%v", err)
 			}
 			ui.Successf("Added profile '%s' for %s", args[0], agentName)
-			ui.Infof("Run 'exitbox %s' to rebuild with the new profile", agentName)
+			ui.Infof("Run 'exitbox run %s' to rebuild with the new profile", agentName)
 		},
 	}
 }
@@ -74,7 +90,7 @@ func newProfileRemoveCmd(agentName string) *cobra.Command {
 				ui.Errorf("%v", err)
 			}
 			ui.Successf("Removed profile '%s' for %s", args[0], agentName)
-			ui.Infof("Run 'exitbox %s' to rebuild without the profile", agentName)
+			ui.Infof("Run 'exitbox run %s' to rebuild without the profile", agentName)
 		},
 	}
 }
@@ -85,15 +101,16 @@ func newProfileStatusCmd(agentName string) *cobra.Command {
 		Short: "Show current profiles",
 		Run: func(cmd *cobra.Command, args []string) {
 			projectDir, _ := os.Getwd()
-			profiles, _ := profile.GetProjectProfiles(agentName, projectDir)
+			cfg := config.LoadOrDefault()
+			projectProfiles, _ := profile.GetProjectProfiles(agentName, projectDir)
 
 			fmt.Println()
 			ui.Cecho(agent.DisplayName(agentName)+" Profile Status", ui.Cyan)
 			fmt.Println()
 
-			if len(profiles) > 0 {
-				fmt.Println("Active profiles:")
-				for _, p := range profiles {
+			if len(cfg.Profiles) > 0 {
+				fmt.Println("Global profiles (from setup wizard):")
+				for _, p := range cfg.Profiles {
 					desc := ""
 					if pr := profile.Get(p); pr != nil {
 						desc = pr.Description
@@ -101,11 +118,27 @@ func newProfileStatusCmd(agentName string) *cobra.Command {
 					fmt.Printf("  %s - %s\n", p, desc)
 				}
 			} else {
-				fmt.Println("No profiles configured.")
+				fmt.Println("Global profiles: none")
 			}
+
 			fmt.Println()
-			fmt.Printf("Run 'exitbox %s profile add <name>' to add profiles.\n", agentName)
+
+			if len(projectProfiles) > 0 {
+				fmt.Println("Project profiles (this directory):")
+				for _, p := range projectProfiles {
+					desc := ""
+					if pr := profile.Get(p); pr != nil {
+						desc = pr.Description
+					}
+					fmt.Printf("  %s - %s\n", p, desc)
+				}
+			} else {
+				fmt.Println("Project profiles: none")
+			}
+
 			fmt.Println()
+			fmt.Printf("Run 'exitbox run %s profile add <name>' to add per-project profiles.\n", agentName)
+			fmt.Println("Run 'exitbox setup' to change global profiles.")
 		},
 	}
 }

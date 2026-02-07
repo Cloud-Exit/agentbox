@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
 	"github.com/cloud-exit/exitbox/internal/config"
@@ -42,10 +43,13 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		return fmt.Errorf("unknown agent: %s", agentName)
 	}
 
-	// Fetch latest version for comparison
-	latestVersion, _ := a.GetLatestVersion()
+	// Only check for new agent versions when auto_update is on or --update passed
+	var latestVersion string
+	if AutoUpdate || force {
+		latestVersion, _ = a.GetLatestVersion()
+	}
 
-	if !force && rt.ImageExists(imageName) {
+	if !force && !ForceRebuild && rt.ImageExists(imageName) {
 		v, _ := rt.ImageInspect(imageName, `{{index .Config.Labels "exitbox.version"}}`)
 		av, _ := rt.ImageInspect(imageName, `{{index .Config.Labels "exitbox.agent.version"}}`)
 
@@ -63,6 +67,11 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		}
 	}
 
+	// Fetch version now if we haven't already (needed for download URLs)
+	if latestVersion == "" {
+		latestVersion, _ = a.GetLatestVersion()
+	}
+
 	// Build base first
 	if err := BuildBase(ctx, rt, force); err != nil {
 		return err
@@ -71,7 +80,13 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	// Rebuild squid when any agent is rebuilt
 	_ = BuildSquid(ctx, rt, true)
 
-	ui.Infof("Building %s core image with %s...", agentName, cmd)
+	if !ui.Verbose {
+		ui.Info("Building containers (use -v for build output)")
+		ui.Infof("%sDisable auto_update in config to skip update checks and speed up launches.%s", ui.Dim, ui.NC)
+		ui.Infof("%sRun 'exitbox rebuild %s' to manually update.%s", ui.Dim, agentName, ui.NC)
+	} else {
+		ui.Infof("Building %s core image with %s...", agentName, cmd)
+	}
 
 	buildCtx := filepath.Join(config.Cache, "build-"+agentName)
 	_ = os.MkdirAll(buildCtx, 0755)
@@ -84,7 +99,9 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		if err != nil {
 			return err
 		}
-		_ = os.WriteFile(dockerfilePath, []byte(df), 0644)
+		if err := os.WriteFile(dockerfilePath, []byte(df), 0644); err != nil {
+			return fmt.Errorf("failed to write Dockerfile: %w", err)
+		}
 
 	case "codex":
 		codexAgent := a.(*agent.Codex)
@@ -102,7 +119,7 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		url := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", "openai/codex", version, binaryName)
 		ui.Infof("Downloading Codex %s...", version)
 		dlPath := filepath.Join(buildCtx, binaryName)
-		if err := downloadFile(url, dlPath); err != nil {
+		if err := downloadFile(ctx, url, dlPath); err != nil {
 			return fmt.Errorf("failed to download Codex: %w", err)
 		}
 		checksum := fileSHA256(dlPath)
@@ -111,7 +128,9 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		df := fmt.Sprintf("FROM exitbox-base\n\nARG CODEX_VERSION=%s\nARG CODEX_CHECKSUM=%s\n", version, checksum)
 		install, _ := a.GetDockerfileInstall(buildCtx)
 		df += install
-		_ = os.WriteFile(dockerfilePath, []byte(df), 0644)
+		if err := os.WriteFile(dockerfilePath, []byte(df), 0644); err != nil {
+			return fmt.Errorf("failed to write Dockerfile: %w", err)
+		}
 
 	case "opencode":
 		ocAgent := a.(*agent.OpenCode)
@@ -129,7 +148,7 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		url := fmt.Sprintf("https://github.com/anomalyco/opencode/releases/download/v%s/%s", version, binaryName)
 		ui.Infof("Downloading OpenCode %s...", version)
 		dlPath := filepath.Join(buildCtx, binaryName)
-		if err := downloadFile(url, dlPath); err != nil {
+		if err := downloadFile(ctx, url, dlPath); err != nil {
 			return fmt.Errorf("failed to download OpenCode: %w", err)
 		}
 		checksum := fileSHA256(dlPath)
@@ -138,7 +157,9 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		df := fmt.Sprintf("FROM exitbox-base\n\nARG OPENCODE_VERSION=%s\nARG OPENCODE_CHECKSUM=%s\n", version, checksum)
 		install, _ := a.GetDockerfileInstall(buildCtx)
 		df += install
-		_ = os.WriteFile(dockerfilePath, []byte(df), 0644)
+		if err := os.WriteFile(dockerfilePath, []byte(df), 0644); err != nil {
+			return fmt.Errorf("failed to write Dockerfile: %w", err)
+		}
 	}
 
 	// Add labels
@@ -146,7 +167,9 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	if latestVersion != "" {
 		labels += fmt.Sprintf("LABEL exitbox.agent.version=\"%s\"\n", latestVersion)
 	}
-	appendToFile(dockerfilePath, labels)
+	if err := appendToFile(dockerfilePath, labels); err != nil {
+		return fmt.Errorf("failed to append labels to Dockerfile: %w", err)
+	}
 
 	args := buildArgs(cmd)
 	args = append(args,
@@ -155,7 +178,7 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		buildCtx,
 	)
 
-	if err := container.BuildInteractive(rt, args); err != nil {
+	if err := buildImage(rt, args, fmt.Sprintf("Building %s core image...", agentName)); err != nil {
 		cfg := config.LoadOrDefault()
 		if len(cfg.Tools.User) > 0 {
 			ui.Warnf("User tools in config: %s", strings.Join(cfg.Tools.User, ", "))
@@ -178,8 +201,13 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	return nil
 }
 
-func downloadFile(url, dest string) error {
-	resp, err := http.Get(url)
+func downloadFile(ctx context.Context, url, dest string) error {
+	client := &http.Client{Timeout: 5 * time.Minute}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -209,11 +237,12 @@ func fileSHA256(path string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-func appendToFile(path, content string) {
+func appendToFile(path, content string) error {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		return
+		return err
 	}
 	defer f.Close()
-	_, _ = f.WriteString(content)
+	_, err = f.WriteString(content)
+	return err
 }

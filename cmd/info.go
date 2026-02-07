@@ -71,7 +71,7 @@ var infoCmd = &cobra.Command{
 			}
 		}
 		if !found {
-			fmt.Println("  No agents built. Run 'exitbox <agent>' to build and run one.")
+			fmt.Println("  No agents built. Run 'exitbox run <agent>' to build and run one.")
 		}
 		fmt.Println()
 	},

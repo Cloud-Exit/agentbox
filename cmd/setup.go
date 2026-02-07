@@ -32,17 +32,6 @@ var setupCmd = &cobra.Command{
 	Short: "Run the setup wizard",
 	Long:  "Interactive setup wizard to configure roles, languages, tools, and agents.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if config.ConfigExists() {
-			ui.Warn("Config already exists at " + config.ConfigFile())
-			fmt.Print("Re-running setup will overwrite your configuration. Continue? [y/N] ")
-			var resp string
-			_, _ = fmt.Scanln(&resp)
-			if resp != "y" && resp != "Y" {
-				ui.Info("Cancelled")
-				return nil
-			}
-		}
-
 		return runSetup()
 	},
 }
@@ -58,11 +47,21 @@ func runSetup() error {
 		return nil
 	}
 
-	if err := wizard.Run(); err != nil {
+	// Load existing config to pre-populate wizard, or nil for fresh start
+	var existingCfg *config.Config
+	if config.ConfigExists() {
+		existingCfg = config.LoadOrDefault()
+	}
+
+	if err := wizard.Run(existingCfg); err != nil {
 		if err.Error() == "setup cancelled" {
-			ui.Info("Setup cancelled. Writing default configuration.")
-			if err := config.WriteDefaults(); err != nil {
-				return fmt.Errorf("writing defaults: %w", err)
+			if existingCfg != nil {
+				ui.Info("Setup cancelled. Existing configuration unchanged.")
+			} else {
+				ui.Info("Setup cancelled. Writing default configuration.")
+				if err := config.WriteDefaults(); err != nil {
+					return fmt.Errorf("writing defaults: %w", err)
+				}
 			}
 			ui.Info("Run 'exitbox setup' to configure later.")
 			return nil
@@ -74,7 +73,7 @@ func runSetup() error {
 	fmt.Println()
 	fmt.Println("Next steps:")
 	fmt.Println("  1. Navigate to your project:  cd /path/to/project")
-	fmt.Println("  2. Run an agent:              exitbox claude")
+	fmt.Println("  2. Run an agent:              exitbox run claude")
 	fmt.Println()
 	return nil
 }

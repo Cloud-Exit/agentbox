@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"os"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
 	"github.com/cloud-exit/exitbox/internal/config"
@@ -40,6 +41,7 @@ var rebuildCmd = &cobra.Command{
 		}
 
 		image.Version = Version
+		image.AutoUpdate = true // rebuild always checks for latest
 
 		var agents []string
 		if name == "all" {
@@ -59,10 +61,17 @@ var rebuildCmd = &cobra.Command{
 			agents = []string{name}
 		}
 
+		projectDir, _ := os.Getwd()
+		ctx := context.Background()
+
 		for _, a := range agents {
 			ui.Infof("Rebuilding %s container image...", agent.DisplayName(a))
-			if err := image.BuildCore(context.Background(), rt, a, true); err != nil {
-				ui.Errorf("Failed to rebuild %s image: %v", agent.DisplayName(a), err)
+			if err := image.BuildCore(ctx, rt, a, true); err != nil {
+				ui.Errorf("Failed to rebuild %s core image: %v", agent.DisplayName(a), err)
+			}
+			// Also rebuild project image (includes profiles/languages)
+			if err := image.BuildProject(ctx, rt, a, projectDir); err != nil {
+				ui.Errorf("Failed to rebuild %s project image: %v", agent.DisplayName(a), err)
 			}
 			ui.Successf("%s image rebuilt successfully", agent.DisplayName(a))
 		}

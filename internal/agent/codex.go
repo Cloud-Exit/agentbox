@@ -155,19 +155,44 @@ func copyDirContents(src, dst string) error {
 	if err != nil {
 		return err
 	}
+	var errCount int
+	var firstErr error
 	for _, e := range entries {
 		srcPath := filepath.Join(src, e.Name())
 		dstPath := filepath.Join(dst, e.Name())
 		if e.IsDir() {
-			_ = os.MkdirAll(dstPath, 0755)
-			_ = copyDirContents(srcPath, dstPath)
+			if err := os.MkdirAll(dstPath, 0755); err != nil {
+				errCount++
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if err := copyDirContents(srcPath, dstPath); err != nil {
+				errCount++
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 		} else {
 			data, err := os.ReadFile(srcPath)
 			if err != nil {
+				errCount++
+				if firstErr == nil {
+					firstErr = err
+				}
 				continue
 			}
-			_ = os.WriteFile(dstPath, data, 0644)
+			if err := os.WriteFile(dstPath, data, 0644); err != nil {
+				errCount++
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 		}
+	}
+	if errCount > 0 {
+		return fmt.Errorf("%d file(s) failed to copy, first error: %w", errCount, firstErr)
 	}
 	return nil
 }

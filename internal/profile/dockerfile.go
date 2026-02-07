@@ -54,10 +54,10 @@ func DockerfileSnippet(name string) string {
 	case "ml":
 		return "# ML profile uses build-tools for compilation\n"
 	case "python":
-		return `# Python profile - uses system Python with pip
-USER user
-RUN python3 -m pip install --user --upgrade pip setuptools wheel
-USER root
+		return `# Python profile - venv with pip, setuptools, wheel
+RUN python3 -m venv /home/user/.venv && \
+    /home/user/.venv/bin/pip install --upgrade pip setuptools wheel
+ENV PATH="/home/user/.venv/bin:$PATH"
 `
 	case "go":
 		return `RUN set -e && \

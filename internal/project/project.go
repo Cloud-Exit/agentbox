@@ -17,6 +17,7 @@
 package project
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,11 +96,8 @@ func ContainerName(agent, projectDir string) string {
 
 func randomHex(n int) string {
 	b := make([]byte, n)
-	f, err := os.Open("/dev/urandom")
-	if err != nil {
-		return "0000"
+	if _, err := rand.Read(b); err != nil {
+		return strings.Repeat("0", n*2)
 	}
-	defer f.Close()
-	_, _ = f.Read(b)
 	return fmt.Sprintf("%x", b)
 }

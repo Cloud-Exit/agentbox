@@ -18,6 +18,8 @@ package run
 
 import (
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,7 +79,7 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 
 	// Firewall / proxy
 	if !opts.NoFirewall {
-		if err := network.StartSquidProxy(rt, opts.AllowURLs); err != nil {
+		if err := network.StartSquidProxy(rt, containerName, opts.AllowURLs); err != nil {
 			return 1, fmt.Errorf("failed to start firewall (Squid proxy): %w", err)
 		}
 		proxyArgs := network.GetProxyEnvVars(rt)
@@ -183,6 +185,11 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		}
 	}
 
+	// Remove per-session URLs if any were registered
+	if len(opts.AllowURLs) > 0 {
+		network.RemoveSessionURLs(rt, containerName)
+	}
+
 	network.CleanupSquidIfUnused(rt)
 	return exitCode, nil
 }
@@ -246,7 +253,7 @@ func ensureFile(parts ...string) string {
 	p := filepath.Join(parts...)
 	_ = os.MkdirAll(filepath.Dir(p), 0755)
 	if _, err := os.Stat(p); os.IsNotExist(err) {
-		_ = os.WriteFile(p, nil, 0644)
+		_ = os.WriteFile(p, []byte("{}\n"), 0644)
 	}
 	return p
 }
@@ -260,7 +267,39 @@ func seedDirOnce(host, managed string) {
 		return
 	}
 	_ = os.MkdirAll(managed, 0755)
-	_ = exec.Command("cp", "-R", host+"/.", managed+"/").Run()
+	_ = copyDirRecursive(host, managed)
+}
+
+func copyDirRecursive(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		return copyFile(path, target)
+	})
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func seedFileOnce(host, managed string) {

@@ -21,10 +21,30 @@ ENV LANG=C.UTF-8 \
     HOME=/home/${USERNAME} \
     PATH="/home/${USERNAME}/.local/bin:/usr/local/bin:${PATH}"
 
-# Install base packages from tools.txt
-COPY tools.txt /tmp/tools.txt
-RUN apk add --no-cache $(grep -v '^\s*#' /tmp/tools.txt | grep -v '^\s*$' | tr '\n' ' ') \
-    && rm /tmp/tools.txt
+# Install base packages
+RUN apk add --no-cache \
+    # Essential tools
+    ca-certificates curl wget git openssh-client bash \
+    # Editors
+    vim nano \
+    # Data processing
+    jq \
+    # Search tools
+    ripgrep fd fzf \
+    # File utilities
+    tree file less bat \
+    # Process utilities
+    procps htop \
+    # Archive tools
+    zip unzip xz tar gzip bzip2 \
+    # Build essentials
+    make patch diffutils \
+    # Text processing
+    sed gawk gettext python3 \
+    # Networking
+    bind-tools netcat-openbsd socat \
+    # Terminal
+    tmux
 
 # Install yq (architecture-aware, version-pinned, checksum-verified)
 RUN if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \

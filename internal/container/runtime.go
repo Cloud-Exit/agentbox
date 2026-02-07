@@ -32,6 +32,7 @@ type Runtime interface {
 	Exec(ctx context.Context, ctr string, args []string) error
 	ImageExists(image string) bool
 	ImageInspect(image, format string) (string, error)
+	ImageList(filter string) ([]string, error)
 	ImageRemove(image string) error
 	PS(filter, format string) ([]string, error)
 	Stop(container string) error
@@ -93,6 +94,21 @@ func (r *shellRuntime) ImageInspect(image, format string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func (r *shellRuntime) ImageList(filter string) ([]string, error) {
+	out, err := exec.Command(r.cmd, "images", "--filter", "reference="+filter, "--format", "{{.Repository}}:{{.Tag}}").Output()
+	if err != nil {
+		return nil, err
+	}
+	var images []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && line != "<none>:<none>" {
+			images = append(images, line)
+		}
+	}
+	return images, nil
 }
 
 func (r *shellRuntime) ImageRemove(image string) error {
@@ -174,9 +190,7 @@ func (r *shellRuntime) IsRootless() bool {
 		if err == nil && strings.TrimSpace(string(out)) == "true" {
 			return true
 		}
-		// Fallback: check uid on Unix systems
-		out, _ = exec.Command("id", "-u").Output()
-		return strings.TrimSpace(string(out)) != "0"
+		return os.Getuid() != 0
 	}
 	return false
 }
@@ -199,6 +213,19 @@ func ExecInteractive(rt Runtime, args []string) (int, error) {
 		return 1, err
 	}
 	return 0, nil
+}
+
+// BuildQuiet runs a build command capturing all output. Returns combined
+// output and error. Use this for non-verbose builds with a spinner.
+func BuildQuiet(rt Runtime, args []string) (string, error) {
+	sr, ok := rt.(*shellRuntime)
+	if !ok {
+		return "", fmt.Errorf("unsupported runtime type")
+	}
+	cmdArgs := append([]string{"build"}, args...)
+	c := exec.Command(sr.cmd, cmdArgs...)
+	out, err := c.CombinedOutput()
+	return string(out), err
 }
 
 // BuildInteractive runs a build command with inherited stdout/stderr.

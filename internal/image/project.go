@@ -28,6 +28,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/profile"
 	proj "github.com/cloud-exit/exitbox/internal/project"
 	"github.com/cloud-exit/exitbox/internal/ui"
+	"github.com/cloud-exit/exitbox/internal/wizard"
 )
 
 // BuildProject builds the agent project image (with profiles).
@@ -41,12 +42,24 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 		return err
 	}
 
-	// Get current profiles
-	profiles, _ := profile.GetProjectProfiles(agentName, projectDir)
+	// Load config for global profiles and user tools
+	cfg := config.LoadOrDefault()
+
+	// Compute global profiles (backfill from roles for old configs without profiles key)
+	globalProfiles := cfg.Profiles
+	if len(globalProfiles) == 0 && len(cfg.Roles) > 0 {
+		globalProfiles = wizard.ComputeProfiles(cfg.Roles, nil)
+	}
+
+	// Get per-project profiles and merge with global profiles
+	projectProfiles, err := profile.GetProjectProfiles(agentName, projectDir)
+	if err != nil {
+		ui.Warnf("Failed to load profiles: %v", err)
+	}
+	profiles := mergeProfiles(globalProfiles, projectProfiles)
 
 	// Build composite hash for cache detection
 	hashParts := strings.Join(profiles, ",")
-	cfg := config.LoadOrDefault()
 	if len(cfg.Tools.User) > 0 {
 		hashParts += ":" + strings.Join(cfg.Tools.User, ",")
 	}
@@ -86,7 +99,7 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	// Add profile installations
 	for _, p := range profiles {
 		if !profile.Exists(p) {
-			return fmt.Errorf("unknown profile '%s'. Run 'exitbox <agent> profile list' for valid names", p)
+			return fmt.Errorf("unknown profile '%s'. Run 'exitbox run <agent> profile list' for valid names", p)
 		}
 		snippet := profile.DockerfileSnippet(p)
 		if snippet != "" {
@@ -104,7 +117,9 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	// Add label
 	fmt.Fprintf(&df, "\nLABEL exitbox.profiles.hash=\"%s\"\n", hashParts)
 
-	_ = os.WriteFile(dockerfilePath, []byte(df.String()), 0644)
+	if err := os.WriteFile(dockerfilePath, []byte(df.String()), 0644); err != nil {
+		return fmt.Errorf("failed to write Dockerfile: %w", err)
+	}
 
 	args := buildArgs(cmd)
 	args = append(args,
@@ -113,10 +128,29 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 		buildCtx,
 	)
 
-	if err := container.BuildInteractive(rt, args); err != nil {
+	if err := buildImage(rt, args, fmt.Sprintf("Building %s project image...", agentName)); err != nil {
 		return fmt.Errorf("failed to build %s project image: %w", agentName, err)
 	}
 
 	ui.Successf("%s project image built", agentName)
 	return nil
+}
+
+// mergeProfiles combines global and per-project profiles, deduplicated, global first.
+func mergeProfiles(global, project []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, p := range global {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	for _, p := range project {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	return result
 }
