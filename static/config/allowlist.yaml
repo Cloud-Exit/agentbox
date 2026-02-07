@@ -1,0 +1,52 @@
+version: 1
+
+ai_providers:
+  - anthropic.com
+  - claude.ai
+  - claude.com
+  - openai.com
+  - chatgpt.com
+  - oaiusercontent.com
+  - googleapis.com
+  - google.com
+  - azure.com
+  - microsoftonline.com
+  - amazonaws.com
+  - mistral.ai
+  - cohere.ai
+  - groq.com
+  - opencode.ai
+  - models.dev
+  - together.xyz
+  - together.ai
+  - replicate.com
+  - huggingface.co
+  - localhost
+  - "127.0.0.1"
+
+development:
+  - github.com
+  - githubusercontent.com
+  - gitlab.com
+  - bitbucket.org
+  - npmjs.org
+  - npmjs.com
+  - pypi.org
+  - pythonhosted.org
+  - crates.io
+  - golang.org
+  - rubygems.org
+  - packagist.org
+  - getcomposer.org
+  - pub.dev
+
+cloud_services:
+  - googleapis.com
+  - amazonaws.com
+  - azure.com
+
+common_services:
+  - sentry.io
+  - statsig.com
+
+custom: []

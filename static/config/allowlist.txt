@@ -1,0 +1,109 @@
+# ExitBox Network Allowlist
+# ==============================================================================
+# Domains listed here will be accessible from containers.
+# All other network requests will be blocked (Squid proxy firewall).
+#
+# Format: one root domain per line (e.g., example.com)
+# All subdomains will be automatically allowed (e.g., api.example.com)
+# Lines starting with # are comments
+# ==============================================================================
+
+# ==============================================================================
+# AI PROVIDERS
+# ==============================================================================
+
+# Anthropic (Claude)
+anthropic.com
+claude.ai
+claude.com
+
+# OpenAI (Codex, ChatGPT, GPT-4)
+openai.com
+chatgpt.com
+oaiusercontent.com
+
+# Google (Vertex AI, Gemini, AI Studio)
+googleapis.com
+google.com
+
+# Azure OpenAI
+azure.com
+microsoftonline.com
+
+# AWS Bedrock
+amazonaws.com
+
+# Mistral AI
+mistral.ai
+
+# Cohere
+cohere.ai
+
+# Groq
+groq.com
+
+# OpenCode
+opencode.ai
+models.dev
+
+# Together AI
+together.xyz
+together.ai
+
+# Replicate
+replicate.com
+
+# Hugging Face
+huggingface.co
+
+# Ollama (local, but might need for some setups)
+localhost
+127.0.0.1
+
+# ==============================================================================
+# DEVELOPMENT TOOLS
+# ==============================================================================
+
+# GitHub (git operations, releases)
+github.com
+githubusercontent.com
+
+# GitLab
+gitlab.com
+
+# Bitbucket
+bitbucket.org
+
+# npm registry
+npmjs.org
+npmjs.com
+
+# Package managers
+pypi.org
+pythonhosted.org
+crates.io
+golang.org
+rubygems.org
+packagist.org
+getcomposer.org
+pub.dev
+
+# ==============================================================================
+# COMMON SERVICES
+# ==============================================================================
+
+# Error tracking
+sentry.io
+
+# Analytics (some tools need these)
+statsig.com
+
+# ==============================================================================
+# USER CUSTOM DOMAINS
+# ==============================================================================
+
+cloud-exit.com
+syself.com
+projectsveltos.github.io
+
+tca0.nl

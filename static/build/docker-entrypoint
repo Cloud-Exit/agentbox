@@ -1,0 +1,148 @@
+#!/bin/bash
+# ==============================================================================
+# Exitbox Docker Entrypoint
+# Runs firewall setup, then executes agent
+# ==============================================================================
+
+set -e
+
+WORKSPACE="/workspace"
+CODEX_CALLBACK_PORT="1455"
+CODEX_RELAY_PORT="2455"
+RELAY_PID=""
+
+cleanup_relay() {
+    if [[ -n "$RELAY_PID" ]]; then
+        kill "$RELAY_PID" >/dev/null 2>&1 || true
+    fi
+}
+
+start_codex_callback_relay() {
+    if ! command -v socat >/dev/null 2>&1; then
+        echo "[WARN] socat not found; Codex OAuth callback relay disabled" >&2
+        return 0
+    fi
+
+    # Relay container-reachable traffic on 2455 to Codex's localhost callback on 1455.
+    socat "TCP-LISTEN:${CODEX_RELAY_PORT},bind=0.0.0.0,reuseaddr,fork" "TCP:127.0.0.1:${CODEX_CALLBACK_PORT}" >/tmp/codex-oauth-relay.log 2>&1 &
+    RELAY_PID="$!"
+}
+
+# ============================================================================
+# AGENT DETECTION
+# ============================================================================
+
+AGENT="${EXITBOX_AGENT:-}"
+
+if [[ -z "$AGENT" ]]; then
+    if command -v claude >/dev/null 2>&1; then
+        AGENT="claude"
+    elif command -v codex >/dev/null 2>&1; then
+        AGENT="codex"
+    elif command -v opencode >/dev/null 2>&1; then
+        AGENT="opencode"
+    fi
+fi
+
+if [[ -n "$AGENT" ]] && ! command -v "$AGENT" >/dev/null 2>&1; then
+    echo "[ERROR] Agent '$AGENT' not found on PATH. The install likely failed during image build." >&2
+    echo "[ERROR] Rebuild the agent image and check installer output." >&2
+    exit 127
+fi
+
+# ============================================================================
+# SANDBOX INSTRUCTIONS
+# ============================================================================
+
+SANDBOX_INSTRUCTIONS="# ExitBox Sandbox Environment
+
+You are running inside an ExitBox sandboxed container. Important constraints:
+
+- You CANNOT run container runtimes (docker, podman, nerdctl, etc.) inside this container.
+- You CANNOT manage containers, images, volumes, or networks from within this environment.
+- Do NOT attempt to debug issues by running docker/podman commands — they are not available.
+- The filesystem at /workspace is your working directory, mounted from the host.
+- Network access is filtered through a firewall proxy. Only allowlisted domains are reachable.
+- You are running as a non-root user with limited capabilities (no-new-privileges, all caps dropped).
+- If you encounter permission errors or network issues, they are likely due to sandbox restrictions.
+- Focus on writing, testing, and debugging code within /workspace. That is your scope.
+"
+
+inject_sandbox_instructions() {
+    local target=""
+    case "$AGENT" in
+        claude)
+            # Claude reads ~/.claude/CLAUDE.md as global instructions
+            target="$HOME/.claude/CLAUDE.md"
+            mkdir -p "$HOME/.claude"
+            ;;
+        codex)
+            # Codex reads ~/.codex/AGENTS.md as global instructions
+            target="$HOME/.codex/AGENTS.md"
+            mkdir -p "$HOME/.codex"
+            ;;
+        opencode)
+            # OpenCode reads ~/.config/opencode/AGENTS.md as global instructions
+            # Also falls back to ~/.claude/CLAUDE.md
+            target="$HOME/.config/opencode/AGENTS.md"
+            mkdir -p "$HOME/.config/opencode"
+            ;;
+    esac
+
+    if [[ -z "$target" ]]; then
+        return
+    fi
+
+    if [[ -f "$target" ]]; then
+        if ! grep -q "ExitBox Sandbox" "$target" 2>/dev/null; then
+            printf '\n%s' "$SANDBOX_INSTRUCTIONS" >> "$target"
+        fi
+    else
+        printf '%s' "$SANDBOX_INSTRUCTIONS" > "$target"
+    fi
+}
+
+if [[ -n "$AGENT" ]]; then
+    inject_sandbox_instructions
+fi
+
+# ============================================================================
+# RUN AGENT
+# ============================================================================
+
+cd "$WORKSPACE"
+
+# Debug: show what's available
+if [[ "${VERBOSE:-false}" == "true" ]]; then
+    echo "[DEBUG] PATH=$PATH" >&2
+    echo "[DEBUG] HOME=$HOME" >&2
+    echo "[DEBUG] AGENT=$AGENT" >&2
+    ls -la /home/user/.local/bin/ >&2 2>/dev/null || echo "[DEBUG] .local/bin not found" >&2
+    which claude >&2 2>/dev/null || echo "[DEBUG] claude not in PATH" >&2
+fi
+
+if [[ "$AGENT" == "codex" ]]; then
+    start_codex_callback_relay
+    trap cleanup_relay EXIT INT TERM
+fi
+
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        claude|codex|opencode)
+            exec "$@"
+            ;;
+        *)
+            if [[ -n "$AGENT" ]]; then
+                exec "$AGENT" "$@"
+            else
+                exec "$@"
+            fi
+            ;;
+    esac
+else
+    if [[ -n "$AGENT" ]]; then
+        exec "$AGENT"
+    else
+        exec bash
+    fi
+fi

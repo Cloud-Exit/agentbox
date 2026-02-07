@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "WebFetch(domain:hub.docker.com)",
-      "Bash(curl:*)",
-      "Bash(bash:*)"
-    ]
-  }
-}

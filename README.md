@@ -1,25 +1,44 @@
 ```
-    _                    _   ____             
-   / \   __ _  ___ _ __ | |_| __ )  _____  __
-  / _ \ / _` |/ _ \ '_ \| __|  _ \ / _ \ \/ /
- / ___ \ (_| |  __/ | | | |_| |_) | (_) >  < 
-/_/   \_\__, |\___|_| |_|\__|____/ \___/_/\_\
-        |___/                                
-                 By Cloud Exit / https://cloud-exit.com
+  _____      _ _   ____
+ | ____|_  _(_) |_| __ )  _____  __
+ |  _| \ \/ / | __|  _ \ / _ \ \/ /
+ | |___ >  <| | |_| |_) | (_) >  <
+ |_____/_/\_\_|\__|____/ \___/_/\_\
+              By Cloud Exit / https://cloud-exit.com
 ```
 
-# AgentBox
+# ExitBox
 
 **Multi-Agent Container Sandbox** by [Cloud Exit](https://cloud-exit.com)
 
-Run AI coding assistants (Claude, Codex, OpenCode) in isolated containers.
+Run AI coding assistants (Claude, Codex, OpenCode) in isolated containers with defense-in-depth security.
 
+
+## Getting Started
+
+Install ExitBox and run the interactive setup wizard to configure your environment:
+
+```bash
+# Install (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/install.sh | sh
+
+# Run the setup wizard
+exitbox setup
+```
+
+The setup wizard guides you through:
+1. **Developer role** — Frontend, Backend, Fullstack, DevOps, Data Science, Mobile, Embedded, or Security
+2. **Languages** — Pre-selected based on your role, customize as needed
+3. **Tool categories** — Build tools, databases, networking, DevOps, security, and more
+4. **Agents** — Choose which AI assistants to enable (Claude, Codex, OpenCode)
+
+The wizard generates a tailored `config.yaml` with your preferences. You can re-run it at any time with `exitbox setup`.
 
 ## Features
 
 ### Security
 
-The project's security posture is rated **High / Robust**, employing a "Defense in Depth" strategy verified by active testing:
+The project's security posture is rated **High / Robust**, employing a "Defense in Depth" strategy:
 
 1.  **DNS Isolation (The "Moat")**: Containers cannot resolve external domain names directly. This forces all traffic through the proxy, as the container "knows" nothing of the outside internet.
 2.  **Mandatory Proxy Usage**: Since direct DNS fails, tools are forced to use the configured `http_proxy`. Bypassing these variables results in immediate connection failure.
@@ -28,7 +47,7 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 
 **Core Features:**
 - **Rootless Containers**: Runs without host root privileges using Podman's user namespaces
-- **Alpine Base Image**: Minimal Alpine Linux base (~5 MB) with a managed tool list (`config/tools.txt`)
+- **Alpine Base Image**: Minimal Alpine Linux base (~5 MB) with a managed tool list
 - **Supply-Chain Hardened Installs**: Claude Code is installed via direct binary download with SHA-256 checksum verification against Anthropic's signed manifest — no `curl | bash`
 - **Squid Proxy Firewall**: Proxy-based destination filtering with explicit allowlist rules
 - **Hard Egress Isolation**: Agent containers run on an internal-only network and can exit only via Squid
@@ -37,34 +56,35 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 - **Resource Limits**: Default 8GB RAM / 4 CPUs to prevent DoS
 - **Secure Defaults**: No automatic mounting of sensitive SSH keys or AWS credentials
 
+### Sandbox-Aware Agents
+
+ExitBox automatically injects sandbox instructions into each agent on container start. This tells the agent it is running inside a restricted container so it won't attempt actions that can't work (e.g., running `docker`, `podman`, or managing infrastructure).
+
+Instructions are written to each agent's native global instructions file:
+
+| Agent    | Instructions file                        |
+|:---------|:-----------------------------------------|
+| Claude   | `~/.claude/CLAUDE.md`                    |
+| Codex    | `~/.codex/AGENTS.md`                     |
+| OpenCode | `~/.config/opencode/AGENTS.md`           |
+
+If the file already exists (e.g., from your own global instructions), ExitBox appends the sandbox notice once. The instructions inform the agent about network restrictions, dropped capabilities, and the read-only nature of the environment so it can focus on writing and debugging code within `/workspace`.
+
 ### Containers
 - **Podman-First**: Optimized for Podman (rootless, daemonless) with Docker fallback
 - **Multi-Agent Support**: Run Claude Code, OpenAI Codex, or OpenCode
 - **Project Isolation**: Each project gets its own containerized environment
 - **Development Profiles**: Pre-configured environments for Rust, Python, Go, Node.js, and more
-- **Custom Tools**: Add Alpine packages to any image via `-t` flag or `~/.config/agentbox/tools.txt`
+- **Custom Tools**: Add Alpine packages to any image via `-t` flag or `config.yaml`
 
 ### Usability
-- **Cross-Platform**: Works on Linux, macOS, and Windows (via WSL2)
-- **Config Import**: All platforms use managed config (import-only). Use `agentbox import <agent>` to seed host config.
-- **Simple Commands**: Just run `agentbox claude` to get started
+- **Cross-Platform**: Native binaries for Linux, macOS, and Windows
+- **Setup Wizard**: Interactive TUI that configures your environment based on your developer role
+- **YAML Config**: Clean, readable configuration with `config.yaml` and `allowlist.yaml`
+- **Config Import**: All platforms use managed config (import-only). Use `exitbox import <agent>` to seed host config.
+- **Simple Commands**: Just run `exitbox claude` to get started
 - **CLI Shorthands**: All flags have single-letter aliases (`-f`, `-r`, `-t`, `-a`, etc.)
 - **Session Allow-URLs**: Temporarily allow extra domains with `-a` — no config file edits, no restarts
-
-## Architecture
-
-### Alpine Base Image
-
-All agent images are built on **Alpine Linux**. The base package list lives in `config/tools.txt` — a plain-text file (one package per line, `#` comments) shared by all image builds. This replaces the previous Debian bookworm-slim base and eliminates duplicate package lists across agents.
-
-Alpine was chosen for:
-- **Small image size**: ~5 MB base vs ~80 MB for Debian slim
-- **musl libc**: Matches the native binaries shipped by Claude Code, git-delta, and yq
-- **Consistent package manager**: `apk` is used everywhere — base image, profiles, and user tools
-
-### Supply-Chain Hardened Agent Installs
-
-Claude Code is installed via **direct binary download with SHA-256 checksum verification** against Anthropic's signed manifest — no `curl | bash`. The download URL is auto-discovered from the official installer if the hardcoded endpoint ever changes. The build aborts on any checksum mismatch.
 
 ## Supported Agents
 
@@ -72,17 +92,24 @@ Claude Code is installed via **direct binary download with SHA-256 checksum veri
 |:------------|:-----------------------------|:-----------------|
 | `claude`    | Anthropic's Claude Code CLI  | None (installed in container) |
 | `codex`     | OpenAI's Codex CLI           | None (downloaded)|
-| `opencode`  | OpenCode AI assistant        | None (official image + tools) |
+| `opencode`  | OpenCode AI assistant        | None (binary download)  |
 
-**Note**: All agents are installed inside the container. Existing host config (`~/.claude`, etc.) is imported once into managed storage on first run. Use `agentbox import <agent>` (or `agentbox import all`) to re-seed from host config.
+All agents are installed inside the container. Existing host config (`~/.claude`, etc.) is imported once into managed storage on first run. Use `exitbox import <agent>` (or `exitbox import all`) to re-seed from host config.
 
 ## Installation
 
 ### Prerequisites
 
-- **Podman** (recommended) or **Docker** - you need at least one; Podman is preferred for its rootless, daemonless design but Docker works too
-- Bash 3.2+
-- Git
+- **Podman** (recommended) or **Docker** — at least one is required; Podman is preferred for its rootless, daemonless design
+- For Windows: **Docker Desktop** provides the Docker CLI that ExitBox uses
+
+### Quick Install (Linux / macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/install.sh | sh
+```
+
+This downloads the latest release binary, verifies its SHA-256 checksum, and installs to `~/.local/bin/`.
 
 ### Linux
 
@@ -91,20 +118,14 @@ Claude Code is installed via **direct binary download with SHA-256 checksum veri
 sudo apt update && sudo apt install -y podman   # Ubuntu/Debian
 # OR: install Docker - see https://docs.docker.com/engine/install/
 
-# Clone and install agentbox
-git clone https://github.com/Cloud-Exit/agentbox.git ~/.agentbox
-cd ~/.agentbox && chmod +x main.sh
+# Install exitbox
+curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/install.sh | sh
 
-# Add to PATH
-mkdir -p ~/.local/bin
-ln -sf ~/.agentbox/main.sh ~/.local/bin/agentbox
+# Run the setup wizard
+exitbox setup
 
-# Append shell aliases (e.g., 'claude' -> 'agentbox claude')
-~/.agentbox/main.sh aliases >> ~/.bashrc
-source ~/.bashrc
-
-# Run an agent (builds image on first run)
-agentbox claude
+# Run an agent
+exitbox claude
 ```
 
 ### macOS
@@ -115,16 +136,29 @@ brew install podman
 podman machine init && podman machine start
 # OR: brew install --cask docker
 
-# Clone and install
-git clone https://github.com/Cloud-Exit/agentbox.git ~/.agentbox
-cd ~/.agentbox && chmod +x main.sh
-mkdir -p ~/.local/bin
-ln -sf ~/.agentbox/main.sh ~/.local/bin/agentbox
-~/.agentbox/main.sh aliases >> ~/.zshrc
-source ~/.zshrc
+# Install exitbox
+curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/install.sh | sh
+
+# Run the setup wizard
+exitbox setup
+```
+
+### Windows
+
+ExitBox runs natively on Windows with Docker Desktop.
+
+1. Install [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/)
+2. Download the latest `exitbox-windows-amd64.exe` from [Releases](https://github.com/cloud-exit/exitbox/releases)
+3. Rename to `exitbox.exe` and place in a directory on your `PATH` (e.g., `C:\Users\<you>\AppData\Local\bin\`)
+4. Run the setup wizard:
+
+```powershell
+exitbox setup
 ```
 
 ### Windows (WSL2)
+
+Alternatively, use ExitBox inside WSL2 for a Linux-native experience:
 
 ```powershell
 # In PowerShell as Administrator
@@ -133,30 +167,38 @@ wsl --install -d Ubuntu
 
 Then in WSL2:
 ```bash
-sudo apt update && sudo apt install -y podman  # or install Docker
-git clone https://github.com/Cloud-Exit/agentbox.git ~/.agentbox
-cd ~/.agentbox && chmod +x main.sh
-mkdir -p ~/.local/bin
-ln -sf ~/.agentbox/main.sh ~/.local/bin/agentbox
-~/.agentbox/main.sh aliases >> ~/.bashrc
-source ~/.bashrc
+sudo apt update && sudo apt install -y podman
+curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/install.sh | sh
+exitbox setup
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/Cloud-Exit/exitbox.git
+cd exitbox
+make build       # builds ./exitbox
+make install     # installs to ~/.local/bin/exitbox
 ```
 
 ## Quick Start
 
 ```bash
+# Run the setup wizard (first time)
+exitbox setup
+
 # Navigate to your project
 cd /path/to/your/project
 
 # Run an agent (builds image automatically on first run)
-agentbox claude
+exitbox claude
 
 # Or run other agents
-agentbox codex
-agentbox opencode
+exitbox codex
+exitbox opencode
 ```
 
-That's it! AgentBox automatically:
+ExitBox automatically:
 - Builds the container image if needed
 - Imports your existing config (`~/.claude`, `~/.codex`, etc.) on first run
 - Mounts your project directory
@@ -164,71 +206,71 @@ That's it! AgentBox automatically:
 
 ## Commands
 
+### Setup
+
+```bash
+exitbox setup             # Run the interactive setup wizard (recommended first step)
+```
+
 ### Running Agents
 
 ```bash
-agentbox claude [args]     # Run Claude Code
-agentbox codex [args]      # Run Codex
-agentbox opencode [args]   # Run OpenCode
-```
-
-### Updating Agents
-
-Agents automatically check for updates each time you run them. If a new version is available, the container image will be rebuilt automatically.
-
-You can also force a rebuild manually:
-
-```bash
-agentbox rebuild <agent>
+exitbox claude [args]     # Run Claude Code
+exitbox codex [args]      # Run Codex
+exitbox opencode [args]   # Run OpenCode
 ```
 
 ### Management
 
 ```bash
-agentbox list              # List available agents and build status
-agentbox enable <agent>    # Enable an agent
-agentbox disable <agent>   # Disable an agent
-agentbox rebuild <agent>   # Force rebuild of agent image
-agentbox uninstall <agent> # Remove agent images and config
-agentbox aliases           # Print shell aliases for ~/.bashrc
+exitbox list              # List available agents and build status
+exitbox enable <agent>    # Enable an agent
+exitbox disable <agent>   # Disable an agent
+exitbox rebuild <agent>   # Force rebuild of agent image
+exitbox rebuild all       # Rebuild all enabled agents
+exitbox uninstall <agent> # Remove agent images and config
+exitbox aliases           # Print shell aliases for ~/.bashrc
+exitbox info              # Show system information
 ```
 
 ### Profile Management
 
 ```bash
-agentbox <agent> profile list       # List available profiles
-agentbox <agent> profile add <name> # Add a development profile
-agentbox <agent> profile remove <n> # Remove a profile
-agentbox <agent> profile status     # Show current profiles
+exitbox <agent> profile list       # List available profiles
+exitbox <agent> profile add <name> # Add a development profile
+exitbox <agent> profile remove <n> # Remove a profile
+exitbox <agent> profile status     # Show current profiles
 ```
 
 ### Utilities
 
 ```bash
-agentbox info              # Show system information
-agentbox logs <agent>      # Show latest agent log file
-agentbox clean             # Clean unused container resources
-agentbox clean all         # Remove all agentbox images
-agentbox projects          # List known projects
+exitbox info              # Show system information
+exitbox logs <agent>      # Show latest agent log file
+exitbox clean             # Clean unused container resources
+exitbox clean all         # Remove all exitbox images
+exitbox projects          # List known projects
 ```
 
 ### Options
 
 ```bash
-agentbox -f claude              # Disable network firewall *DANGEROUS*
-agentbox -r claude              # Mount workspace as read-only (safety)
-agentbox -v claude              # Enable verbose output
-agentbox -n claude              # Don't pass host environment variables
-agentbox -n -e MY_KEY=val claude  # Only pass specific env vars
-agentbox -i /tmp/foo claude     # Mount /tmp/foo into /workspace/foo
-agentbox -t nodejs,go claude    # Add Alpine packages to image (persisted)
-agentbox -a api.example.com claude  # Allow extra domains for this session
-agentbox -u claude              # Check for and apply agent updates
+exitbox -f claude              # Disable network firewall *DANGEROUS*
+exitbox -r claude              # Mount workspace as read-only (safety)
+exitbox -v claude              # Enable verbose output
+exitbox -n claude              # Don't pass host environment variables
+exitbox -n -e MY_KEY=val claude  # Only pass specific env vars
+exitbox -i /tmp/foo claude     # Mount /tmp/foo into /workspace/foo
+exitbox -t nodejs,go claude    # Add Alpine packages to image (persisted)
+exitbox -a api.example.com claude  # Allow extra domains for this session
+exitbox -u claude              # Check for and apply agent updates
 ```
 
 All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`.
 
 ## Available Profiles
+
+Profiles are pre-configured development environments. The setup wizard suggests profiles based on your developer role, or you can add them manually.
 
 | Profile       | Description                              |
 |:--------------|:-----------------------------------------|
@@ -245,56 +287,131 @@ All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--ver
 | `ruby`        | Ruby with bundler                        |
 | `php`         | PHP with composer                        |
 | `database`    | Database CLI clients                     |
-| `devops`      | Docker CLI / kubectl / helm / terraform  |
+| `devops`      | Docker CLI / kubectl / helm / opentofu / kind |
 | `web`         | Web server/testing tools                 |
 | `security`    | Security diagnostics tools               |
 | `flutter`     | Flutter SDK                              |
 
 ## Configuration
 
+ExitBox uses YAML configuration files stored in `~/.config/exitbox/` (Linux/macOS) or `%APPDATA%\exitbox\` (Windows).
+
+### Setup Wizard
+
+The recommended way to configure ExitBox is through the setup wizard:
+
+```bash
+exitbox setup
+```
+
+The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It runs automatically on first use, or you can re-run it to reconfigure at any time.
+
+### config.yaml
+
+The main configuration file controls which agents are enabled, extra packages, and default settings:
+
+```yaml
+version: 1
+roles:
+  - backend
+  - devops
+
+agents:
+  claude:
+    enabled: true
+  codex:
+    enabled: false
+  opencode:
+    enabled: true
+
+tools:
+  user:
+    - postgresql-client
+    - redis
+
+settings:
+  auto_update: false
+  status_bar: true            # Show "ExitBox <version> - <agent>" bar at top of terminal
+  default_flags:
+    no_firewall: false
+    read_only: false
+    no_env: false
+```
+
+The `status_bar` setting controls the thin status bar displayed at the top of the terminal while an agent is running. It is enabled by default. Set to `false` to disable it.
+
+### allowlist.yaml
+
+The network allowlist is organized by category for readability:
+
+```yaml
+version: 1
+ai_providers:
+  - anthropic.com
+  - claude.ai
+  - openai.com
+  # ...
+
+development:
+  - github.com
+  - npmjs.org
+  - pypi.org
+  # ...
+
+cloud_services:
+  - googleapis.com
+  - amazonaws.com
+  - azure.com
+
+custom:
+  - mycompany.com
+```
+
 ### Custom Tools
 
-AgentBox images come with a standard set of Alpine packages (see `config/tools.txt`). You can add extra packages in two ways:
+Add extra Alpine packages to your container images:
 
 1. **CLI flag** (persisted automatically):
    ```bash
-   agentbox -t nodejs,python3-dev claude
+   exitbox -t nodejs,python3-dev claude
    ```
-   This adds the packages to `~/.config/agentbox/tools.txt` and rebuilds the image.
 
-2. **Manual edit**:
-   ```bash
-   echo "nodejs" >> ~/.config/agentbox/tools.txt
+2. **config.yaml**:
+   ```yaml
+   tools:
+     user:
+       - nodejs
+       - python3-dev
    ```
-   The image will rebuild on next run when tools change.
 
-Packages are Alpine `apk` package names. Use `apk search <name>` inside a container to find available packages.
+The image rebuilds automatically when tools change.
 
 ### Resource Limits
 
-AgentBox enforces default resource limits to prevent runaway agents:
+ExitBox enforces default resource limits to prevent runaway agents:
 - **Memory**: 8GB
 - **CPU**: 4 vCPUs
 
 ### What Gets Mounted
 
-AgentBox uses **managed config** (import-only). On first run, host config is copied into `~/.config/agentbox/<agent>/` and all mounts come from there. Host originals are never modified. Use `agentbox import <agent>` to re-seed from host config at any time.
+ExitBox uses **managed config** (import-only). On first run, host config is copied into `~/.config/exitbox/<agent>/` and all mounts come from there. Host originals are never modified. Use `exitbox import <agent>` to re-seed from host config at any time.
 
 | Agent    | Managed Path                                      | Container Path                    |
 |:---------|:--------------------------------------------------|:----------------------------------|
-| Claude   | `~/.config/agentbox/claude/.claude`               | `/home/user/.claude`              |
-| Claude   | `~/.config/agentbox/claude/.claude.json`          | `/home/user/.claude.json`         |
-| Claude   | `~/.config/agentbox/claude/.config`               | `/home/user/.config`              |
-| Codex    | `~/.config/agentbox/codex/.codex`                 | `/home/user/.codex`               |
-| Codex    | `~/.config/agentbox/codex/.config/codex`          | `/home/user/.config/codex`        |
-| OpenCode | `~/.config/agentbox/opencode/.opencode`           | `/home/user/.opencode`            |
-| OpenCode | `~/.config/agentbox/opencode/.config/opencode`    | `/home/user/.config/opencode`     |
-| OpenCode | `~/.config/agentbox/opencode/.local/share/opencode` | `/home/user/.local/share/opencode` |
-| OpenCode | `~/.config/agentbox/opencode/.local/state`        | `/home/user/.local/state`         |
+| Claude   | `~/.config/exitbox/claude/.claude`               | `/home/user/.claude`              |
+| Claude   | `~/.config/exitbox/claude/.claude.json`          | `/home/user/.claude.json`         |
+| Claude   | `~/.config/exitbox/claude/.config`               | `/home/user/.config`              |
+| Codex    | `~/.config/exitbox/codex/.codex`                 | `/home/user/.codex`               |
+| Codex    | `~/.config/exitbox/codex/.config/codex`          | `/home/user/.config/codex`        |
+| OpenCode | `~/.config/exitbox/opencode/.opencode`           | `/home/user/.opencode`            |
+| OpenCode | `~/.config/exitbox/opencode/.config/opencode`    | `/home/user/.config/opencode`     |
+| OpenCode | `~/.config/exitbox/opencode/.local/share/opencode` | `/home/user/.local/share/opencode` |
+| OpenCode | `~/.config/exitbox/opencode/.local/state`        | `/home/user/.local/state`         |
+| OpenCode | `~/.config/exitbox/opencode/.cache/opencode`     | `/home/user/.cache/opencode`      |
 
 Your project directory is mounted at `/workspace`.
 
-When Codex is enabled, AgentBox publishes callback port `1455` on the shared `agentbox-squid` container and relays it to the active Codex container, so OrbStack/private-networking callback flows work reliably.
+When Codex is enabled, ExitBox publishes callback port `1455` on the shared `exitbox-squid` container and relays it to the active Codex container, so OrbStack/private-networking callback flows work reliably.
 
 **Note:** SSH keys (`~/.ssh`) and AWS credentials (`~/.aws`) are **NOT** mounted by default for security.
 
@@ -304,49 +421,75 @@ When Codex is enabled, AgentBox publishes callback port `1455` on the shared `ag
 |:----------------------|:-------------------------------------|
 | `VERBOSE`             | Enable verbose output                |
 | `CONTAINER_RUNTIME`   | Force runtime (`podman` or `docker`) |
-| `AGENTBOX_NO_FIREWALL`| Disable firewall (`true`)            |
-| `AGENTBOX_SQUID_DNS`  | Squid DNS servers (comma/space list, default: `1.1.1.1,8.8.8.8`) |
-| `AGENTBOX_SQUID_DNS_SEARCH` | Squid DNS search domains (default: `.` to disable inherited search suffixes) |
+| `EXITBOX_NO_FIREWALL`| Disable firewall (`true`)            |
+| `EXITBOX_SQUID_DNS`  | Squid DNS servers (comma/space list, default: `1.1.1.1,8.8.8.8`) |
+| `EXITBOX_SQUID_DNS_SEARCH` | Squid DNS search domains (default: `.` to disable inherited search suffixes) |
+
+## Architecture
+
+### Alpine Base Image
+
+All agent images are built on **Alpine Linux**. The base package list is embedded in the binary and shared by all image builds.
+
+Alpine was chosen for:
+- **Small image size**: ~5 MB base vs ~80 MB for Debian slim
+- **musl libc**: Matches the native binaries shipped by Claude Code, git-delta, and yq
+- **Consistent package manager**: `apk` is used everywhere — base image, profiles, and user tools
+
+### 3-Layer Image Hierarchy
+
+```
+base image (Alpine + tools)
+  └── core image (agent-specific install)
+        └── project image (development profiles layered on)
+```
+
+Each layer uses label-based caching (`exitbox.version`, `exitbox.agent.version`, `exitbox.tools.hash`, `exitbox.profiles.hash`) so rebuilds are fast and incremental.
+
+### Supply-Chain Hardened Agent Installs
+
+Claude Code is installed via **direct binary download with SHA-256 checksum verification** against Anthropic's signed manifest — no `curl | bash`. The download URL is auto-discovered from the official installer if the hardcoded endpoint ever changes. The build aborts on any checksum mismatch.
 
 ## Network Firewall
 
-AgentBox uses a **Squid Proxy** container to enforce strict destination allowlisting:
+ExitBox uses a **Squid Proxy** container to enforce strict destination allowlisting:
 
 1. **Hard egress control**: Agent containers run on an internal-only network with no direct internet route.
 2. **Proxy path**: Squid is dual-homed (internal + egress networks), so outbound traffic must traverse Squid.
-3. **Allowlist**: Only destinations listed in `allowlist.txt` are permitted through the proxy.
+3. **Allowlist**: Only destinations listed in `allowlist.yaml` are permitted through the proxy.
 4. **Fail closed**: Missing or empty allowlist blocks all outbound destinations.
 
 ### Configuring the Allowlist
 
-Edit `~/.config/agentbox/allowlist.txt` or the default at `config/allowlist.txt`.
-Add explicit hosts or wildcard domains:
+Edit `~/.config/exitbox/allowlist.yaml` and add domains to the `custom` list:
 
-- `example.com` allows `example.com` and its subdomains.
-- `api.example.com` allows only that host scope (and deeper subdomains).
-- `*.example.com` is accepted as wildcard syntax.
-- `8.8.8.8` allows a specific IPv4 destination.
-- `2606:4700:4700::1111` allows a specific IPv6 destination.
-
-```bash
-# Add a custom destination
-echo "mycompany.com" >> ~/.config/agentbox/allowlist.txt
+```yaml
+custom:
+  - mycompany.com
+  - api.internal.example.com
 ```
+
+Domain formats:
+- `example.com` allows `example.com` and its subdomains
+- `api.example.com` allows only that host scope (and deeper subdomains)
+- `*.example.com` is accepted as wildcard syntax
+- `8.8.8.8` allows a specific IPv4 destination
+- `2606:4700:4700::1111` allows a specific IPv6 destination
 
 ### Temporary Domain Access
 
 Allow extra domains for a single session without editing the allowlist:
 
 ```bash
-agentbox -a api.example.com,cdn.example.com claude
+exitbox -a api.example.com,cdn.example.com claude
 ```
 
-The domains are merged into the Squid config and applied via **hot-reload** (`squid -k reconfigure`) — no proxy restart, no container restart, no connection drop. If the Squid proxy is already running from a previous session, the config is regenerated and reloaded in-place. These domains do not persist across sessions.
+The domains are merged into the Squid config and applied via **hot-reload** (`squid -k reconfigure`) — no proxy restart, no container restart, no connection drop. These domains do not persist across sessions.
 
 ### Disabling the Firewall
 
 ```bash
-agentbox --no-firewall claude   # *DANGEROUS* - disables all network restrictions
+exitbox --no-firewall claude   # *DANGEROUS* - disables all network restrictions
 ```
 
 ## Why Podman?
@@ -356,6 +499,8 @@ agentbox --no-firewall claude   # *DANGEROUS* - disables all network restriction
 | Rootless by default  | Yes              | No (requires group)  |
 | Daemonless           | Yes              | No (requires daemon) |
 | Security             | Better isolation | Requires daemon root |
+
+On Windows, Docker Desktop is the primary supported runtime.
 
 ## Troubleshooting
 
@@ -379,17 +524,44 @@ sudo usermod -aG docker $USER
 newgrp docker
 ```
 
+### Windows: Docker Desktop not detected
+
+Ensure Docker Desktop is running and the `docker` CLI is on your `PATH`. You can verify with:
+
+```powershell
+docker info
+```
+
+### Re-running the Setup Wizard
+
+If your needs change or you want to reconfigure:
+
+```bash
+exitbox setup
+```
+
 ## Uninstallation
 
 ```bash
-rm -rf ~/.agentbox ~/.local/bin/agentbox
-rm -rf ~/.config/agentbox ~/.cache/agentbox
-podman images | grep agentbox | awk '{print $3}' | xargs podman rmi -f
+# Remove the binary
+rm -f ~/.local/bin/exitbox
+
+# Remove configuration and data
+rm -rf ~/.config/exitbox ~/.cache/exitbox ~/.local/share/exitbox
+
+# Remove container images
+podman images | grep exitbox | awk '{print $3}' | xargs podman rmi -f
+# OR for Docker:
+docker images | grep exitbox | awk '{print $3}' | xargs docker rmi -f
 ```
+
+On Windows, delete `exitbox.exe` and remove `%APPDATA%\exitbox\`.
 
 ## License
 
-MIT License - see LICENSE file.
+AGPL-3.0 - see [LICENSE](LICENSE) file.
+
+ExitBox is open-source software licensed under the GNU Affero General Public License v3.0. Commercial licensing is available from [Cloud Exit](https://cloud-exit.com) for organizations that require proprietary usage terms.
 
 ## Contributing
 

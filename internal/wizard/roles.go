@@ -1,0 +1,232 @@
+// ExitBox - Multi-Agent Container Sandbox
+// Copyright (C) 2026 Cloud Exit B.V.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+// Package wizard implements the interactive TUI setup wizard for ExitBox.
+package wizard
+
+// Role represents a developer role with preset defaults.
+type Role struct {
+	Name           string
+	Description    string
+	Profiles       []string // Default profiles to activate
+	Languages      []string // Pre-checked language names in language step
+	ToolCategories []string // Pre-checked tool category names in tools step
+}
+
+// Language represents a selectable programming language.
+type Language struct {
+	Name    string // Display name
+	Profile string // Maps to an exitbox profile name
+}
+
+// ToolCategory represents a selectable tool category.
+type ToolCategory struct {
+	Name     string   // Display name
+	Packages []string // Alpine packages in this category
+	Binaries []Binary // Extra binaries to download (not available via apk)
+}
+
+// Binary represents a tool installed via direct download rather than apk.
+type Binary struct {
+	Name       string // Binary name (installed to /usr/local/bin)
+	URLPattern string // Download URL with {arch} placeholder (amd64/arm64)
+}
+
+// AgentOption represents a selectable agent.
+type AgentOption struct {
+	Name        string
+	DisplayName string
+	Description string
+}
+
+// Roles defines the available developer roles.
+var Roles = []Role{
+	{
+		Name:           "Frontend",
+		Description:    "Web frontend development",
+		Profiles:       []string{"node", "web", "build-tools"},
+		Languages:      []string{"Node/JS"},
+		ToolCategories: []string{"Build Tools", "Web"},
+	},
+	{
+		Name:           "Backend",
+		Description:    "Server-side development",
+		Profiles:       []string{"python", "database", "build-tools"},
+		Languages:      []string{"Python", "Go"},
+		ToolCategories: []string{"Build Tools", "Database"},
+	},
+	{
+		Name:           "Fullstack",
+		Description:    "Full-stack web development",
+		Profiles:       []string{"node", "python", "database", "web", "build-tools"},
+		Languages:      []string{"Node/JS", "Python"},
+		ToolCategories: []string{"Build Tools", "Database", "Web"},
+	},
+	{
+		Name:           "DevOps",
+		Description:    "Infrastructure and operations",
+		Profiles:       []string{"devops", "node", "networking", "shell", "build-tools"},
+		Languages:      []string{"Go", "Python", "Node/JS"},
+		ToolCategories: []string{"Build Tools", "Networking", "DevOps", "Shell Utils"},
+	},
+	{
+		Name:           "Data Science",
+		Description:    "Data analysis and machine learning",
+		Profiles:       []string{"python", "datascience", "database"},
+		Languages:      []string{"Python"},
+		ToolCategories: []string{"Database"},
+	},
+	{
+		Name:           "Mobile",
+		Description:    "Mobile application development",
+		Profiles:       []string{"flutter", "node"},
+		Languages:      []string{"Flutter/Dart", "Node/JS"},
+		ToolCategories: []string{"Build Tools"},
+	},
+	{
+		Name:           "Embedded",
+		Description:    "Embedded systems and IoT",
+		Profiles:       []string{"c", "embedded", "build-tools"},
+		Languages:      []string{"C/C++", "Rust"},
+		ToolCategories: []string{"Build Tools"},
+	},
+	{
+		Name:           "Security",
+		Description:    "Security research and tooling",
+		Profiles:       []string{"security", "networking", "shell"},
+		Languages:      []string{"Python", "Go"},
+		ToolCategories: []string{"Networking", "Security", "Shell Utils"},
+	},
+}
+
+// AllLanguages defines the available language choices.
+var AllLanguages = []Language{
+	{Name: "Go", Profile: "go"},
+	{Name: "Python", Profile: "python"},
+	{Name: "Node/JS", Profile: "node"},
+	{Name: "Rust", Profile: "rust"},
+	{Name: "Java", Profile: "java"},
+	{Name: "Ruby", Profile: "ruby"},
+	{Name: "PHP", Profile: "php"},
+	{Name: "C/C++", Profile: "c"},
+	{Name: "Flutter/Dart", Profile: "flutter"},
+}
+
+// AllToolCategories defines the available tool category choices.
+var AllToolCategories = []ToolCategory{
+	{Name: "Build Tools", Packages: []string{"cmake", "samurai", "autoconf", "automake", "libtool"}},
+	{Name: "Shell Utils", Packages: []string{"rsync", "openssh-client", "mandoc", "gnupg", "file"}},
+	{Name: "Networking", Packages: []string{"iptables", "ipset", "iproute2", "bind-tools"}},
+	{Name: "Database", Packages: []string{"postgresql16-client", "mariadb-client", "sqlite", "redis"}},
+	{Name: "DevOps", Packages: []string{"docker-cli", "docker-cli-compose", "kubectl", "helm", "opentofu"}, Binaries: []Binary{
+		{Name: "kind", URLPattern: "https://kind.sigs.k8s.io/dl/latest/kind-linux-{arch}"},
+	}},
+	{Name: "Web", Packages: []string{"nginx", "apache2-utils", "httpie"}},
+	{Name: "Security", Packages: []string{"nmap", "tcpdump", "netcat-openbsd"}},
+}
+
+// AllAgents defines the selectable agents.
+var AllAgents = []AgentOption{
+	{Name: "claude", DisplayName: "Claude Code", Description: "Anthropic's AI coding assistant"},
+	{Name: "codex", DisplayName: "OpenAI Codex", Description: "OpenAI's coding CLI"},
+	{Name: "opencode", DisplayName: "OpenCode", Description: "Open-source AI code assistant"},
+}
+
+// GetRole returns the role by name, or nil.
+func GetRole(name string) *Role {
+	for i := range Roles {
+		if Roles[i].Name == name {
+			return &Roles[i]
+		}
+	}
+	return nil
+}
+
+// ComputeProfiles computes the profile list from roles + language selections.
+func ComputeProfiles(roleNames []string, languages []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+
+	for _, roleName := range roleNames {
+		if role := GetRole(roleName); role != nil {
+			for _, p := range role.Profiles {
+				add(p)
+			}
+		}
+	}
+
+	for _, langName := range languages {
+		for _, l := range AllLanguages {
+			if l.Name == langName {
+				add(l.Profile)
+				break
+			}
+		}
+	}
+
+	return result
+}
+
+// ComputePackages computes Alpine packages from selected tool categories.
+func ComputePackages(categories []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, catName := range categories {
+		for _, tc := range AllToolCategories {
+			if tc.Name == catName {
+				for _, pkg := range tc.Packages {
+					if !seen[pkg] {
+						seen[pkg] = true
+						result = append(result, pkg)
+					}
+				}
+				break
+			}
+		}
+	}
+
+	return result
+}
+
+// ComputeBinaries computes extra binary downloads from selected tool categories.
+func ComputeBinaries(categories []string) []Binary {
+	seen := make(map[string]bool)
+	var result []Binary
+
+	for _, catName := range categories {
+		for _, tc := range AllToolCategories {
+			if tc.Name == catName {
+				for _, b := range tc.Binaries {
+					if !seen[b.Name] {
+						seen[b.Name] = true
+						result = append(result, b)
+					}
+				}
+				break
+			}
+		}
+	}
+
+	return result
+}

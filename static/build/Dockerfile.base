@@ -1,0 +1,92 @@
+# syntax=docker/dockerfile:1
+# ==============================================================================
+# ExitBox Base Image (Alpine + Rootless + iptables)
+# Minimal, security-focused base with working firewall
+# ==============================================================================
+
+FROM alpine:3.21
+
+# Build arguments
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG USERNAME=user
+ARG DELTA_VERSION=0.18.2
+ARG YQ_VERSION=4.52.2
+ARG TARGETARCH=x86_64
+ARG EXITBOX_VERSION=3.2.0
+
+# Environment variables
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    HOME=/home/${USERNAME} \
+    PATH="/home/${USERNAME}/.local/bin:/usr/local/bin:${PATH}"
+
+# Install base packages from tools.txt
+COPY tools.txt /tmp/tools.txt
+RUN apk add --no-cache $(grep -v '^\s*#' /tmp/tools.txt | grep -v '^\s*$' | tr '\n' ' ') \
+    && rm /tmp/tools.txt
+
+# Install yq (architecture-aware, version-pinned, checksum-verified)
+RUN if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
+        YQ_ARCH="amd64"; \
+        YQ_SHA256="a74bd266990339e0c48a2103534aef692abf99f19390d12c2b0ce6830385c459"; \
+    elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
+        YQ_ARCH="arm64"; \
+        YQ_SHA256="c82856ac30da522f50dcdd4f53065487b5a2927e9b87ff637956900986f1f7c2"; \
+    else \
+        YQ_ARCH="amd64"; \
+        YQ_SHA256="a74bd266990339e0c48a2103534aef692abf99f19390d12c2b0ce6830385c459"; \
+    fi && \
+    curl -sL "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_${YQ_ARCH}" -o /usr/local/bin/yq && \
+    echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c - && \
+    chmod +x /usr/local/bin/yq
+
+# Install git-delta for better diffs (musl build for Alpine)
+RUN mkdir -p /usr/local/bin && \
+    if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
+        DELTA_ARCH="x86_64-unknown-linux-musl"; \
+    elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
+        DELTA_ARCH="aarch64-unknown-linux-musl"; \
+    else \
+        DELTA_ARCH="x86_64-unknown-linux-musl"; \
+    fi && \
+    wget -q -O /tmp/delta.tar.gz "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${DELTA_ARCH}.tar.gz" && \
+    tar -xzf /tmp/delta.tar.gz -C /tmp && \
+    mv /tmp/delta-*/delta /usr/local/bin/ && \
+    rm -rf /tmp/delta*
+
+# Create non-root user
+RUN addgroup -g ${GROUP_ID} ${USERNAME} && \
+    adduser -u ${USER_ID} -G ${USERNAME} -s /bin/bash -h /home/${USERNAME} -D ${USERNAME} && \
+    mkdir -p /home/${USERNAME}/.local/bin && \
+    mkdir -p /home/${USERNAME}/.config && \
+    mkdir -p /home/${USERNAME}/.cache && \
+    chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}
+
+# Set up workspace
+RUN mkdir -p /workspace && chown ${USERNAME}:${USERNAME} /workspace
+
+# Copy entrypoint
+COPY docker-entrypoint /usr/local/bin/docker-entrypoint
+RUN chmod +x /usr/local/bin/docker-entrypoint
+
+# Stay as root for entrypoint (drops to user after setup)
+WORKDIR /workspace
+
+# Configure git defaults system-wide so they apply to the runtime user.
+RUN git config --system core.pager "delta --dark" && \
+    git config --system interactive.diffFilter "delta --color-only" && \
+    git config --system delta.navigate true && \
+    git config --system delta.light false && \
+    git config --system delta.side-by-side true && \
+    git config --system merge.conflictstyle diff3 && \
+    git config --system diff.colorMoved default && \
+    git config --system init.defaultBranch main && \
+    git config --system core.editor vim
+
+# Labels
+LABEL exitbox.type="base"
+LABEL exitbox.version="${EXITBOX_VERSION}"
+LABEL exitbox.rootless="true"
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint"]
