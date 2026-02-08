@@ -92,6 +92,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: unit_tests
+    continue-on-error: true  # Don't block PR if baseline is missing (first run)
     permissions:
       contents:      read
       actions:       read

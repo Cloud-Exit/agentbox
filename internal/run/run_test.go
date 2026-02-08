@@ -3,25 +3,37 @@ package run
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestExpandPath_Absolute(t *testing.T) {
-	got := expandPath("/usr/local/bin", "/project")
-	if got != "/usr/local/bin" {
-		t.Errorf("expandPath(/usr/local/bin) = %q, want /usr/local/bin", got)
+	if runtime.GOOS == "windows" {
+		got := expandPath(`C:\Users\test`, `C:\project`)
+		if got != `C:\Users\test` {
+			t.Errorf("expandPath(C:\\Users\\test) = %q, want C:\\Users\\test", got)
+		}
+	} else {
+		got := expandPath("/usr/local/bin", "/project")
+		if got != "/usr/local/bin" {
+			t.Errorf("expandPath(/usr/local/bin) = %q, want /usr/local/bin", got)
+		}
 	}
 }
 
 func TestExpandPath_Relative(t *testing.T) {
-	got := expandPath("subdir", "/project")
-	expected := filepath.Join("/project", "subdir")
+	projectDir := t.TempDir()
+	got := expandPath("subdir", projectDir)
+	expected := filepath.Join(projectDir, "subdir")
 	if got != expected {
 		t.Errorf("expandPath(subdir) = %q, want %q", got, expected)
 	}
 }
 
 func TestExpandPath_Tilde(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tilde expansion uses $HOME which is not set on Windows runners")
+	}
 	home := os.Getenv("HOME")
 	got := expandPath("~/docs", "/project")
 	expected := filepath.Join(home, "docs")
@@ -32,8 +44,9 @@ func TestExpandPath_Tilde(t *testing.T) {
 
 func TestExpandPath_TildeNoSlash(t *testing.T) {
 	// "~docs" should be treated as relative, not tilde expansion
-	got := expandPath("~docs", "/project")
-	expected := filepath.Join("/project", "~docs")
+	projectDir := t.TempDir()
+	got := expandPath("~docs", projectDir)
+	expected := filepath.Join(projectDir, "~docs")
 	if got != expected {
 		t.Errorf("expandPath(~docs) = %q, want %q", got, expected)
 	}
