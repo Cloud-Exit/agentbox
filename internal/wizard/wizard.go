@@ -113,18 +113,14 @@ func applyResult(state State, existingCfg *config.Config) error {
 		Name:        workspaceName,
 		Development: development,
 	})
-	if state.MakeDefault {
-		cfg.Settings.DefaultWorkspace = workspaceName
-	} else if existingCfg == nil {
-		cfg.Settings.DefaultWorkspace = ""
-	}
+	cfg.Settings.DefaultWorkspace = state.DefaultWorkspace
 
 	cfg.Agents = config.AgentConfig{}
 	for _, name := range state.Agents {
 		cfg.SetAgentEnabled(name, true)
 	}
 
-	cfg.Tools.User = ComputePackages(state.ToolCategories)
+	cfg.Tools.User = mergePackages(ComputePackages(state.ToolCategories), state.CustomPackages)
 	cfg.Tools.Binaries = nil
 	for _, b := range ComputeBinaries(state.ToolCategories) {
 		cfg.Tools.Binaries = append(cfg.Tools.Binaries, config.BinaryConfig{
@@ -137,7 +133,12 @@ func applyResult(state State, existingCfg *config.Config) error {
 		return fmt.Errorf("saving config: %w", err)
 	}
 
-	al := config.DefaultAllowlist()
+	var al *config.Allowlist
+	if len(state.DomainCategories) > 0 {
+		al = categoriesToAllowlist(state.DomainCategories)
+	} else {
+		al = config.LoadAllowlistOrDefault()
+	}
 	if err := config.SaveAllowlist(al); err != nil {
 		return fmt.Errorf("saving allowlist: %w", err)
 	}
@@ -196,6 +197,25 @@ func applyLanguageDelta(original []string, selectedLanguages []string) []string 
 		}
 	}
 
+	return result
+}
+
+// mergePackages combines category packages and custom packages, deduplicating.
+func mergePackages(categoryPkgs, customPkgs []string) []string {
+	seen := make(map[string]bool, len(categoryPkgs))
+	result := make([]string, 0, len(categoryPkgs)+len(customPkgs))
+	for _, p := range categoryPkgs {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
+	for _, p := range customPkgs {
+		if !seen[p] {
+			seen[p] = true
+			result = append(result, p)
+		}
+	}
 	return result
 }
 

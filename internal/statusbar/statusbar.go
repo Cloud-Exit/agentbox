@@ -43,14 +43,15 @@ const (
 )
 
 var (
-	active     bool
-	curVersion string
-	curAgent   string
-	lastWidth  int
-	lastHeight int
-	stopCh     chan struct{}
-	tty        *os.File
-	mu         sync.Mutex
+	active       bool
+	curVersion   string
+	curAgent     string
+	curWorkspace string
+	lastWidth    int
+	lastHeight   int
+	stopCh       chan struct{}
+	tty          *os.File
+	mu           sync.Mutex
 )
 
 var displayNames = map[string]string{
@@ -65,7 +66,7 @@ const barRows = 2 // text + spacer
 // Show clears the screen, renders the status bar, sets the scroll region,
 // and starts a background watcher that re-renders on terminal resize.
 // No-op if stdout is not a TTY.
-func Show(version, agent string) {
+func Show(version, agent, workspace string) {
 	fd := int(os.Stdout.Fd())
 	if !term.IsTerminal(fd) {
 		return
@@ -73,6 +74,7 @@ func Show(version, agent string) {
 
 	curVersion = version
 	curAgent = agent
+	curWorkspace = workspace
 
 	// Open /dev/tty for direct terminal writes (avoids interleaving with
 	// the container's stdout).
@@ -106,13 +108,26 @@ func render(width, height int) {
 		name = curAgent
 	}
 	left := fmt.Sprintf(" ExitBox - %s", name)
-	right := fmt.Sprintf("v%s ", curVersion)
-
-	gap := width - len(left) - len(right)
-	if gap < 1 {
-		gap = 1
+	ws := curWorkspace
+	if ws == "" {
+		ws = "default"
 	}
-	text := left + strings.Repeat(" ", gap) + right
+	center := fmt.Sprintf("Workspace: %s", ws)
+	versionDisplay := curVersion
+	if !strings.HasPrefix(versionDisplay, "v") {
+		versionDisplay = "v" + versionDisplay
+	}
+	right := fmt.Sprintf("%s ", versionDisplay)
+
+	// Distribute gaps: left...center...right
+	totalContent := len(left) + len(center) + len(right)
+	totalGap := width - totalContent
+	if totalGap < 2 {
+		totalGap = 2
+	}
+	leftGap := totalGap / 2
+	rightGap := totalGap - leftGap
+	text := left + strings.Repeat(" ", leftGap) + center + strings.Repeat(" ", rightGap) + right
 
 	contentStart := barRows + 1
 

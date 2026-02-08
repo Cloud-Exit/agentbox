@@ -39,6 +39,7 @@ development:
   - packagist.org
   - getcomposer.org
   - pub.dev
+  - alpinelinux.org
 
 cloud_services:
   - googleapis.com

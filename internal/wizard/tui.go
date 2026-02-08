@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/cloud-exit/exitbox/internal/apk"
 	"github.com/cloud-exit/exitbox/internal/config"
 )
 
@@ -33,9 +35,11 @@ const (
 	stepRole
 	stepLanguage
 	stepTools
+	stepPackages
 	stepProfile
 	stepAgents
 	stepSettings
+	stepDomains
 	stepReview
 	stepDone
 )
@@ -45,8 +49,10 @@ type State struct {
 	Roles               []string
 	Languages           []string
 	ToolCategories      []string
+	CustomPackages      []string // user-selected extra Alpine packages
 	WorkspaceName       string
 	MakeDefault         bool
+	DefaultWorkspace    string // set when d is toggled on workspace select screen
 	Agents              []string
 	AutoUpdate          bool
 	StatusBar           bool
@@ -54,7 +60,8 @@ type State struct {
 	AutoResume          bool
 	PassEnv             bool
 	ReadOnly            bool
-	OriginalDevelopment []string // non-nil when editing an existing workspace
+	OriginalDevelopment []string          // non-nil when editing an existing workspace
+	DomainCategories    []domainCategory  // editable allowlist categories
 }
 
 // Model is the root bubbletea model for the wizard.
@@ -72,6 +79,65 @@ type Model struct {
 	height         int
 	cancelled      bool
 	confirmed      bool
+
+	// Package search step fields
+	pkgSearchInput string            // current search text
+	pkgSearchMode  bool              // true = typing in search, false = browsing results
+	pkgResults     []apk.Package     // current search results (max 50)
+	pkgSelected    map[string]bool   // selected custom packages (persists across searches)
+	pkgIndex       []apk.Package     // full in-memory index (loaded once)
+	pkgLoading     bool              // true while fetching index
+	pkgLoadErr     string            // error message if fetch failed
+
+	// Sidebar navigation
+	sidebarFocused bool
+	sidebarCursor  int
+	visitedSteps   map[Step]bool
+	isFirstRun     bool // true = sidebar read-only
+
+	// Domain step
+	domainCategories []domainCategory // 5 allowlist categories
+	domainCatCursor  int              // selected category tab (0-4)
+	domainItemCursor int              // highlighted domain within category
+	domainInputMode  bool             // typing new domain
+	domainInput      string           // current input text
+}
+
+// stepInfo describes a wizard step for sidebar display.
+type stepInfo struct {
+	Step  Step
+	Label string
+	Num   int
+}
+
+// sidebarSteps defines the steps shown in the sidebar.
+var sidebarSteps = []stepInfo{
+	{stepRole, "Roles", 1},
+	{stepLanguage, "Languages", 2},
+	{stepTools, "Tools", 3},
+	{stepPackages, "Packages", 4},
+	{stepProfile, "Workspace", 5},
+	{stepAgents, "Agents", 6},
+	{stepSettings, "Settings", 7},
+	{stepDomains, "Firewall", 8},
+	{stepReview, "Review", 9},
+}
+
+const sidebarWidth = 22
+
+// visibleSidebarSteps returns sidebar steps filtered by current state
+// (e.g. hides Firewall when disabled) with renumbered step labels.
+func (m Model) visibleSidebarSteps() []stepInfo {
+	var out []stepInfo
+	num := 1
+	for _, si := range sidebarSteps {
+		if si.Step == stepDomains && !m.firewallEnabled() {
+			continue
+		}
+		out = append(out, stepInfo{Step: si.Step, Label: si.Label, Num: num})
+		num++
+	}
+	return out
 }
 
 // NewModel creates a new wizard model with defaults.
@@ -86,9 +152,14 @@ func NewModel() Model {
 	checked["setting:pass_env"] = true
 	checked["setting:read_only"] = false
 	return Model{
-		step:           stepWelcome,
-		checked:        checked,
-		workspaceInput: "default",
+		step:             stepWelcome,
+		checked:          checked,
+		workspaceInput:   "default",
+		pkgSelected:      make(map[string]bool),
+		pkgSearchMode:    true,
+		visitedSteps:     make(map[Step]bool),
+		isFirstRun:       true,
+		domainCategories: allowlistToCategories(config.DefaultAllowlist()),
 	}
 }
 
@@ -180,6 +251,25 @@ func NewModelFromConfig(cfg *config.Config) Model {
 		}
 	}
 
+	// Pre-populate custom packages: packages in Tools.User that aren't
+	// from the selected tool categories.
+	pkgSelected := make(map[string]bool)
+	categoryPkgs := make(map[string]bool)
+	for _, p := range ComputePackages(cfg.ToolCategories) {
+		categoryPkgs[p] = true
+	}
+	for _, p := range cfg.Tools.User {
+		if !categoryPkgs[p] {
+			pkgSelected[p] = true
+		}
+	}
+
+	// Pre-mark all steps visited since user has been through wizard before.
+	visited := make(map[Step]bool)
+	for _, si := range sidebarSteps {
+		visited[si.Step] = true
+	}
+
 	return Model{
 		step:             startStep,
 		cursor:           activeCursor,
@@ -187,6 +277,11 @@ func NewModelFromConfig(cfg *config.Config) Model {
 		workspaceInput:   activeWorkspaceNameOrDefault(activeWorkspaceName),
 		workspaces:       workspaces,
 		defaultWorkspace: cfg.Settings.DefaultWorkspace,
+		pkgSelected:      pkgSelected,
+		pkgSearchMode:    true,
+		visitedSteps:     visited,
+		isFirstRun:       false,
+		domainCategories: allowlistToCategories(config.LoadAllowlistOrDefault()),
 	}
 }
 
@@ -236,6 +331,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 		}
+
+		// Tab toggles sidebar focus (only on re-run, non-workspaceOnly, past welcome screens)
+		if msg.String() == "tab" && !m.isFirstRun && !m.workspaceOnly && m.step >= stepRole && m.step <= stepReview {
+			m.sidebarFocused = !m.sidebarFocused
+			if m.sidebarFocused {
+				// Position cursor on current step
+				for i, si := range m.visibleSidebarSteps() {
+					if si.Step == m.step {
+						m.sidebarCursor = i
+						break
+					}
+				}
+			}
+			return m, nil
+		}
+
+		// When sidebar is focused, intercept all keys
+		if m.sidebarFocused {
+			return m.updateSidebar(msg)
+		}
 	}
 
 	switch m.step {
@@ -249,12 +364,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateLanguage(msg)
 	case stepTools:
 		return m.updateTools(msg)
+	case stepPackages:
+		return m.updatePackages(msg)
 	case stepProfile:
 		return m.updateProfile(msg)
 	case stepAgents:
 		return m.updateAgents(msg)
 	case stepSettings:
 		return m.updateSettings(msg)
+	case stepDomains:
+		return m.updateDomains(msg)
 	case stepReview:
 		return m.updateReview(msg)
 	}
@@ -263,29 +382,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	var content string
 	switch m.step {
 	case stepWelcome:
 		return m.viewWelcome()
 	case stepWorkspaceSelect:
 		return m.viewWorkspaceSelect()
 	case stepRole:
-		return m.viewRole()
+		content = m.viewRole()
 	case stepLanguage:
-		return m.viewLanguage()
+		content = m.viewLanguage()
 	case stepTools:
-		return m.viewTools()
+		content = m.viewTools()
+	case stepPackages:
+		content = m.viewPackages()
 	case stepProfile:
-		return m.viewProfile()
+		content = m.viewProfile()
 	case stepAgents:
-		return m.viewAgents()
+		content = m.viewAgents()
 	case stepSettings:
-		return m.viewSettings()
+		content = m.viewSettings()
+	case stepDomains:
+		content = m.viewDomains()
 	case stepReview:
-		return m.viewReview()
+		content = m.viewReview()
 	case stepDone:
 		return ""
+	default:
+		return ""
 	}
-	return ""
+
+	// Compose with sidebar for non-workspaceOnly flow
+	if !m.workspaceOnly {
+		sidebar := m.renderSidebar()
+		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, " "+content)
+	}
+	return content
 }
 
 // Cancelled returns true if the user cancelled the wizard.
@@ -391,6 +523,22 @@ func (m Model) updateWorkspaceSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < itemCount-1 {
 				m.cursor++
 			}
+		case "d":
+			if m.cursor < len(m.workspaces) {
+				ws := m.workspaces[m.cursor]
+				if m.defaultWorkspace == ws.Name {
+					m.defaultWorkspace = ""
+				} else {
+					m.defaultWorkspace = ws.Name
+				}
+				newDefault := m.defaultWorkspace
+				return m, func() tea.Msg {
+					cfg := config.LoadOrDefault()
+					cfg.Settings.DefaultWorkspace = newDefault
+					_ = config.SaveConfig(cfg)
+					return nil
+				}
+			}
 		case "enter":
 			if m.cursor < len(m.workspaces) {
 				// Selected an existing workspace — re-populate from it
@@ -493,15 +641,22 @@ func (m Model) viewWorkspaceSelect() string {
 	b.WriteString("\n\n")
 	b.WriteString("Which workspace do you want to configure?\n\n")
 
+	// cursor(2) + name(20) + space(1) = 23 chars indent for wrapping
+	const wsIndent = "                       "
 	for i, ws := range m.workspaces {
 		cursor := "  "
 		if m.cursor == i {
 			cursor = cursorStyle.Render("> ")
 		}
-		paddedName := fmt.Sprintf("%-20s", ws.Name)
-		desc := ""
+		prefix := " "
+		if ws.Name == m.defaultWorkspace {
+			prefix = "*"
+		}
+		paddedName := fmt.Sprintf("%s %-20s", prefix, ws.Name)
+		var desc string
 		if len(ws.Development) > 0 {
-			desc = strings.Join(ws.Development, ", ")
+			wrapped := wrapWords(ws.Development, wsIndent, m.width)
+			desc = strings.TrimLeft(wrapped, " ")
 		} else {
 			desc = "no development stack"
 		}
@@ -523,7 +678,8 @@ func (m Model) viewWorkspaceSelect() string {
 	}
 	b.WriteString(fmt.Sprintf("\n%s%s\n", cursor, label))
 
-	b.WriteString(helpStyle.Render("\nEnter to select, q to quit"))
+	b.WriteString(helpStyle.Render("\nEnter to select, d to toggle default, q to quit"))
+	b.WriteString("\n\n" + dimStyle.Render("* Default workspace for new sessions"))
 	return b.String()
 }
 
@@ -572,6 +728,7 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			m.visitedSteps[stepRole] = true
 			m.step = stepLanguage
 			m.cursor = 0
 		case "esc":
@@ -591,7 +748,7 @@ func (m Model) viewRole() string {
 	if m.workspaceOnly {
 		b.WriteString(titleStyle.Render("Step 1/3 — What kind of developer are you?"))
 	} else {
-		b.WriteString(titleStyle.Render("Step 1/7 — What kind of developer are you?"))
+		b.WriteString(m.stepTitle(1, "What kind of developer are you?"))
 	}
 	b.WriteString("\n")
 	if m.editingExisting {
@@ -626,9 +783,9 @@ func (m Model) viewRole() string {
 		}
 	}
 	if hasRole {
-		b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+		b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back" + m.tabHint()))
 	} else {
-		b.WriteString(helpStyle.Render("\nSpace to toggle, Esc to go back") + "  " + dimStyle.Render("(select at least one role)"))
+		b.WriteString(helpStyle.Render("\nSpace to toggle, Esc to go back"+m.tabHint()) + "  " + dimStyle.Render("(select at least one role)"))
 	}
 	return b.String()
 }
@@ -656,6 +813,7 @@ func (m Model) updateLanguage(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state.Languages = append(m.state.Languages, l.Name)
 				}
 			}
+			m.visitedSteps[stepLanguage] = true
 			if m.workspaceOnly {
 				m.step = stepReview
 			} else {
@@ -675,7 +833,7 @@ func (m Model) viewLanguage() string {
 	if m.workspaceOnly {
 		b.WriteString(titleStyle.Render("Step 2/3 — Which languages do you use?"))
 	} else {
-		b.WriteString(titleStyle.Render("Step 2/7 — Which languages do you use?"))
+		b.WriteString(m.stepTitle(2, "Which languages do you use?"))
 	}
 	b.WriteString("\n")
 	if m.editingExisting {
@@ -701,7 +859,7 @@ func (m Model) viewLanguage() string {
 		b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, check, paddedName))
 	}
 
-	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back" + m.tabHint()))
 	return b.String()
 }
 
@@ -728,7 +886,18 @@ func (m Model) updateTools(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state.ToolCategories = append(m.state.ToolCategories, t.Name)
 				}
 			}
-			m.step = stepProfile
+			m.visitedSteps[stepTools] = true
+			if m.workspaceOnly {
+				m.step = stepProfile
+			} else {
+				m.step = stepPackages
+				m.pkgSearchMode = true
+				if m.pkgIndex == nil && !m.pkgLoading && m.pkgLoadErr == "" {
+					m.pkgLoading = true
+					m.cursor = 0
+					return m, loadPkgIndex
+				}
+			}
 			m.cursor = 0
 		case "esc":
 			m.step = stepLanguage
@@ -743,7 +912,7 @@ func (m Model) viewTools() string {
 	if m.workspaceOnly {
 		b.WriteString(titleStyle.Render("Step 3/3 — Which tool categories do you need?"))
 	} else {
-		b.WriteString(titleStyle.Render("Step 3/7 — Which tool categories do you need?"))
+		b.WriteString(m.stepTitle(3, "Which tool categories do you need?"))
 	}
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Pre-selected based on your role. Space to toggle.\n"))
@@ -763,15 +932,283 @@ func (m Model) viewTools() string {
 			paddedName = selectedStyle.Render(paddedName)
 		}
 		// prefix: cursor(2) + check(3) + space(1) + name(15) + space(1) = 22 chars
-		wrapped := wrapWords(cat.Packages, "                      ", m.width)
+		wrapped := wrapWords(cat.Packages, "                      ", m.contentWidth())
 		// First line starts after the padded name, so trim leading indent
 		firstLine := strings.TrimLeft(wrapped, " ")
 		pkgs := dimStyle.Render(firstLine)
 		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedName, pkgs))
 	}
 
-	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back" + m.tabHint()))
 	return b.String()
+}
+
+// --- Packages Step (search + browse) ---
+
+// pkgIndexLoadedMsg is sent when the APKINDEX has been fetched and parsed.
+type pkgIndexLoadedMsg struct {
+	index []apk.Package
+	err   error
+}
+
+func loadPkgIndex() tea.Msg {
+	index, err := apk.LoadIndex()
+	return pkgIndexLoadedMsg{index: index, err: err}
+}
+
+func (m Model) updatePackages(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case pkgIndexLoadedMsg:
+		m.pkgLoading = false
+		if msg.err != nil {
+			m.pkgLoadErr = msg.err.Error()
+		} else {
+			m.pkgIndex = msg.index
+			m.pkgLoadErr = ""
+		}
+		// Run initial search if there's already text
+		if m.pkgSearchInput != "" {
+			m.pkgResults = apk.Search(m.pkgIndex, m.pkgSearchInput, 50)
+		}
+		return m, nil
+
+	case tea.KeyMsg:
+		// If still loading, only allow esc and enter
+		if m.pkgLoading {
+			switch msg.String() {
+			case "esc":
+				m.step = stepTools
+				m.cursor = 0
+			}
+			return m, nil
+		}
+
+		if m.pkgSearchMode {
+			return m.updatePackagesSearchMode(msg)
+		}
+		return m.updatePackagesBrowseMode(msg)
+	}
+	return m, nil
+}
+
+func (m Model) updatePackagesSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		// Confirm and move to next step
+		m.state.CustomPackages = nil
+		for pkg := range m.pkgSelected {
+			if m.pkgSelected[pkg] {
+				m.state.CustomPackages = append(m.state.CustomPackages, pkg)
+			}
+		}
+		m.visitedSteps[stepPackages] = true
+		m.step = stepProfile
+		m.cursor = 0
+		return m, nil
+	case "esc":
+		m.step = stepTools
+		m.cursor = 0
+		return m, nil
+	case "down":
+		if len(m.pkgResults) > 0 {
+			m.pkgSearchMode = false
+			m.cursor = 0
+		}
+		return m, nil
+	case "backspace", "ctrl+h":
+		if len(m.pkgSearchInput) > 0 {
+			m.pkgSearchInput = m.pkgSearchInput[:len(m.pkgSearchInput)-1]
+			if m.pkgSearchInput != "" && m.pkgIndex != nil {
+				m.pkgResults = apk.Search(m.pkgIndex, m.pkgSearchInput, 50)
+			} else {
+				m.pkgResults = nil
+			}
+		}
+		return m, nil
+	default:
+		s := msg.String()
+		var added bool
+		for _, c := range s {
+			if c >= ' ' && c <= '~' {
+				m.pkgSearchInput += string(c)
+				added = true
+			}
+		}
+		if added && m.pkgIndex != nil {
+			m.pkgResults = apk.Search(m.pkgIndex, m.pkgSearchInput, 50)
+		}
+		return m, nil
+	}
+}
+
+func (m Model) updatePackagesBrowseMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxVisible := m.pkgMaxVisible()
+	resultCount := len(m.pkgResults)
+	if resultCount > maxVisible {
+		resultCount = maxVisible
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		} else {
+			// At top of results, go back to search mode
+			m.pkgSearchMode = true
+		}
+	case "down", "j":
+		if m.cursor < resultCount-1 {
+			m.cursor++
+		}
+	case " ", "x":
+		if m.cursor < len(m.pkgResults) {
+			pkg := m.pkgResults[m.cursor].Name
+			m.pkgSelected[pkg] = !m.pkgSelected[pkg]
+			if !m.pkgSelected[pkg] {
+				delete(m.pkgSelected, pkg)
+			}
+		}
+	case "enter":
+		// Confirm and move to next step
+		m.state.CustomPackages = nil
+		for pkg := range m.pkgSelected {
+			if m.pkgSelected[pkg] {
+				m.state.CustomPackages = append(m.state.CustomPackages, pkg)
+			}
+		}
+		m.visitedSteps[stepPackages] = true
+		m.step = stepProfile
+		m.cursor = 0
+	case "esc":
+		m.step = stepTools
+		m.cursor = 0
+	default:
+		// Typed character → switch back to search mode and append
+		s := msg.String()
+		var added bool
+		for _, c := range s {
+			if c >= ' ' && c <= '~' {
+				m.pkgSearchInput += string(c)
+				added = true
+			}
+		}
+		if added {
+			m.pkgSearchMode = true
+			if m.pkgIndex != nil {
+				m.pkgResults = apk.Search(m.pkgIndex, m.pkgSearchInput, 50)
+			}
+			m.cursor = 0
+		}
+	}
+	return m, nil
+}
+
+// pkgMaxVisible returns how many package results to display.
+func (m Model) pkgMaxVisible() int {
+	// Reserve lines for: title(1) + subtitle(1) + blank(1) + search(1) + blank(1) + added(1) + blank(1) + help(2) = ~9
+	available := m.height - 9
+	if available < 5 {
+		available = 5
+	}
+	if available > 20 {
+		available = 20
+	}
+	return available
+}
+
+func (m Model) viewPackages() string {
+	var b strings.Builder
+	b.WriteString(m.stepTitle(4, "Add extra Alpine packages"))
+	b.WriteString("\n")
+	b.WriteString(subtitleStyle.Render("Search for additional packages beyond the tool categories.\n"))
+	b.WriteString("\n")
+
+	if m.pkgLoading {
+		b.WriteString("  Loading package database...\n")
+		b.WriteString(helpStyle.Render("\nPlease wait, Esc to go back"))
+		return b.String()
+	}
+
+	if m.pkgLoadErr != "" && m.pkgIndex == nil {
+		b.WriteString(fmt.Sprintf("  %s\n", warnStyle.Render("Error: "+m.pkgLoadErr)))
+		b.WriteString(dimStyle.Render("  You can type package names directly.\n"))
+		b.WriteString("\n")
+	}
+
+	// Search input
+	cursor := " "
+	if m.pkgSearchMode {
+		cursor = cursorStyle.Render(">")
+	}
+	b.WriteString(fmt.Sprintf("  %s Search: %s\n", cursor, selectedStyle.Render(m.pkgSearchInput+blinkCursor(m.pkgSearchMode))))
+	b.WriteString("\n")
+
+	// Results
+	maxVisible := m.pkgMaxVisible()
+	visibleResults := m.pkgResults
+	if len(visibleResults) > maxVisible {
+		visibleResults = visibleResults[:maxVisible]
+	}
+
+	for i, pkg := range visibleResults {
+		cursor := "  "
+		if !m.pkgSearchMode && m.cursor == i {
+			cursor = cursorStyle.Render("> ")
+		}
+		check := "[ ]"
+		if m.pkgSelected[pkg.Name] {
+			check = selectedStyle.Render("[x]")
+		}
+		paddedName := fmt.Sprintf("%-20s", pkg.Name)
+		if !m.pkgSearchMode && m.cursor == i {
+			paddedName = selectedStyle.Render(paddedName)
+		}
+		desc := dimStyle.Render(truncate(pkg.Description, 50))
+		b.WriteString(fmt.Sprintf("  %s%s %s %s\n", cursor, check, paddedName, desc))
+	}
+
+	if m.pkgSearchInput != "" && len(m.pkgResults) == 0 && m.pkgIndex != nil {
+		b.WriteString(dimStyle.Render("    No packages found.\n"))
+	}
+
+	// Show selected packages
+	var selected []string
+	for pkg := range m.pkgSelected {
+		if m.pkgSelected[pkg] {
+			selected = append(selected, pkg)
+		}
+	}
+	if len(selected) > 0 {
+		// Sort for stable display
+		sortStrings(selected)
+		b.WriteString(fmt.Sprintf("\n  Added: %s\n", selectedStyle.Render(strings.Join(selected, ", "))))
+	}
+
+	b.WriteString(helpStyle.Render("\nType to search, Space to toggle, Enter to confirm, Esc to go back" + m.tabHint()))
+	return b.String()
+}
+
+func blinkCursor(active bool) string {
+	if active {
+		return "█"
+	}
+	return ""
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}
+
+// sortStrings sorts a string slice in place (simple insertion sort to avoid importing sort).
+func sortStrings(ss []string) {
+	for i := 1; i < len(ss); i++ {
+		for j := i; j > 0 && ss[j] < ss[j-1]; j-- {
+			ss[j], ss[j-1] = ss[j-1], ss[j]
+		}
+	}
 }
 
 // --- Workspace Step ---
@@ -789,10 +1226,16 @@ func (m Model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.workspaceOnly {
 				m.state.MakeDefault = false
 			}
+			m.visitedSteps[stepProfile] = true
 			m.step = stepAgents
 			m.cursor = 0
 		case "esc":
-			m.step = stepTools
+			if m.workspaceOnly {
+				m.step = stepTools
+			} else {
+				m.step = stepPackages
+				m.pkgSearchMode = true
+			}
 			m.cursor = 0
 		case "backspace", "ctrl+h":
 			if len(m.workspaceInput) > 0 {
@@ -800,11 +1243,10 @@ func (m Model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		default:
 			s := key.String()
-			if len(s) == 1 {
-				c := s[0]
+			for _, c := range s {
 				isAlphaNum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 				if isAlphaNum || c == '-' || c == '_' {
-					m.workspaceInput += s
+					m.workspaceInput += string(c)
 				}
 			}
 		}
@@ -814,7 +1256,7 @@ func (m Model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewProfile() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 4/7 — Name your workspace"))
+	b.WriteString(m.stepTitle(5, "Name your workspace"))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("This workspace stores development stacks and separate agent configs.\n"))
 	b.WriteString("\n")
@@ -823,9 +1265,9 @@ func (m Model) viewProfile() string {
 	b.WriteString(dimStyle.Render("Examples: personal, work, client-a"))
 	b.WriteString("\n")
 	if strings.TrimSpace(m.workspaceInput) == "" {
-		b.WriteString(helpStyle.Render("\nType a name, Esc to go back") + "  " + dimStyle.Render("(name required)"))
+		b.WriteString(helpStyle.Render("\nType a name, Esc to go back"+m.tabHint()) + "  " + dimStyle.Render("(name required)"))
 	} else {
-		b.WriteString(helpStyle.Render("\nType to edit, Enter to confirm, Esc to go back"))
+		b.WriteString(helpStyle.Render("\nType to edit, Enter to confirm, Esc to go back" + m.tabHint()))
 	}
 	return b.String()
 }
@@ -864,6 +1306,7 @@ func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.state.Agents = append(m.state.Agents, a.Name)
 				}
 			}
+			m.visitedSteps[stepAgents] = true
 			m.step = stepSettings
 			m.cursor = 0
 		case "esc":
@@ -876,7 +1319,7 @@ func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewAgents() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 5/7 — Which agents do you want to enable?"))
+	b.WriteString(m.stepTitle(6, "Which agents do you want to enable?"))
 	b.WriteString("\n\n")
 
 	for i, agent := range AllAgents {
@@ -903,9 +1346,9 @@ func (m Model) viewAgents() string {
 		}
 	}
 	if hasAgent {
-		b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+		b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back" + m.tabHint()))
 	} else {
-		b.WriteString(helpStyle.Render("\nSpace to toggle, Esc to go back") + "  " + dimStyle.Render("(select at least one agent)"))
+		b.WriteString(helpStyle.Render("\nSpace to toggle, Esc to go back"+m.tabHint()) + "  " + dimStyle.Render("(select at least one agent)"))
 	}
 	return b.String()
 }
@@ -919,8 +1362,7 @@ var settingsOptions = []struct {
 }{
 	{"setting:auto_update", "Auto-update agents", "Check for new versions on every launch (slows down startup)"},
 	{"setting:status_bar", "Status bar", "Show a status bar with version and agent info during sessions"},
-	{"setting:make_default", "Make workspace default", "Use this workspace by default in new sessions"},
-	{"setting:firewall", "Network firewall", "Restrict outbound network to allowlisted domains only"},
+	{"setting:firewall", "Network firewall", "Restrict outbound network to allowlisted domains only (disabling decreases security)"},
 	{"setting:auto_resume", "Auto-resume sessions", "Automatically resume the last agent conversation"},
 	{"setting:pass_env", "Pass host environment", "Forward host environment variables into the container"},
 	{"setting:read_only", "Read-only workspace", "Mount workspace as read-only (agents cannot modify files)"},
@@ -943,12 +1385,19 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.state.AutoUpdate = m.checked["setting:auto_update"]
 			m.state.StatusBar = m.checked["setting:status_bar"]
-			m.state.MakeDefault = m.checked["setting:make_default"]
 			m.state.EnableFirewall = m.checked["setting:firewall"]
 			m.state.AutoResume = m.checked["setting:auto_resume"]
 			m.state.PassEnv = m.checked["setting:pass_env"]
 			m.state.ReadOnly = m.checked["setting:read_only"]
-			m.step = stepReview
+			m.state.MakeDefault = m.checked["setting:make_default"]
+			m.visitedSteps[stepSettings] = true
+			if m.firewallEnabled() {
+				m.step = stepDomains
+				m.domainCatCursor = 0
+				m.domainItemCursor = 0
+			} else {
+				m.step = stepReview
+			}
 			m.cursor = 0
 		case "esc":
 			m.step = stepAgents
@@ -960,7 +1409,7 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) viewSettings() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 6/7 — Settings"))
+	b.WriteString(m.stepTitle(7, "Settings"))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Space to toggle. Use 'exitbox rebuild <agent>' to update manually.\n"))
 	b.WriteString("\n")
@@ -978,10 +1427,23 @@ func (m Model) viewSettings() string {
 		if m.cursor == i {
 			paddedLabel = selectedStyle.Render(paddedLabel)
 		}
-		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedLabel, dimStyle.Render(opt.Description)))
+		desc := dimStyle.Render(opt.Description)
+		if opt.Key == "setting:firewall" && !m.checked[opt.Key] {
+			desc = warnStyle.Render("⚠ " + opt.Description)
+		}
+		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedLabel, desc))
 	}
 
-	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back"))
+	defaultWs := m.defaultWorkspace
+	if m.checked["setting:make_default"] {
+		defaultWs = activeWorkspaceNameOrDefault(m.workspaceInput)
+	}
+	if defaultWs == "" {
+		defaultWs = "none"
+	}
+	b.WriteString(fmt.Sprintf("\n  Default workspace: %s\n", dimStyle.Render(defaultWs)))
+
+	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back" + m.tabHint()))
 	return b.String()
 }
 
@@ -991,14 +1453,22 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
 		case "enter", "y":
+			m.state.DefaultWorkspace = m.defaultWorkspace
 			m.confirmed = true
 			m.step = stepDone
 			return m, tea.Quit
 		case "d":
 			m.state.MakeDefault = !m.state.MakeDefault
+			if m.state.MakeDefault {
+				m.defaultWorkspace = activeWorkspaceNameOrDefault(m.state.WorkspaceName)
+			} else if m.defaultWorkspace == activeWorkspaceNameOrDefault(m.state.WorkspaceName) {
+				m.defaultWorkspace = ""
+			}
 		case "esc":
 			if m.workspaceOnly {
 				m.step = stepLanguage
+			} else if m.firewallEnabled() {
+				m.step = stepDomains
 			} else {
 				m.step = stepSettings
 			}
@@ -1017,7 +1487,8 @@ func (m Model) viewReview() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 7/7 — Review your configuration"))
+	total := len(m.visibleSidebarSteps())
+	b.WriteString(m.stepTitle(total, "Review your configuration"))
 	b.WriteString("\n\n")
 
 	if len(m.state.Roles) > 0 {
@@ -1072,7 +1543,7 @@ func (m Model) viewReview() string {
 	b.WriteString(fmt.Sprintf("  Make default: %s\n", defaultStr))
 	firewallStr := successStyle.Render("yes")
 	if !m.state.EnableFirewall {
-		firewallStr = dimStyle.Render("no")
+		firewallStr = warnStyle.Render("⚠ no")
 	}
 	b.WriteString(fmt.Sprintf("  Firewall:     %s\n", firewallStr))
 	autoResumeStr := successStyle.Render("yes")
@@ -1106,13 +1577,32 @@ func (m Model) viewReview() string {
 	packages := ComputePackages(m.state.ToolCategories)
 	if len(packages) > 0 {
 		// "  Packages:   " = 14 chars indent
-		wrapped := wrapWords(packages, "              ", m.width)
+		wrapped := wrapWords(packages, "              ", m.contentWidth())
 		firstLine := strings.TrimLeft(wrapped, " ")
 		b.WriteString(fmt.Sprintf("  Packages:   %s\n", dimStyle.Render(firstLine)))
 	}
 
+	if len(m.state.CustomPackages) > 0 {
+		sorted := make([]string, len(m.state.CustomPackages))
+		copy(sorted, m.state.CustomPackages)
+		sortStrings(sorted)
+		wrapped := wrapWords(sorted, "              ", m.contentWidth())
+		firstLine := strings.TrimLeft(wrapped, " ")
+		b.WriteString(fmt.Sprintf("  Extra pkgs: %s\n", selectedStyle.Render(firstLine)))
+	}
+
+	if len(m.state.DomainCategories) > 0 {
+		total := countDomains(m.state.DomainCategories)
+		custom := countCustomDomains(m.state.DomainCategories)
+		domainStr := fmt.Sprintf("%d domains", total)
+		if custom > 0 {
+			domainStr += fmt.Sprintf(" (%d custom)", custom)
+		}
+		b.WriteString(fmt.Sprintf("  Allowlist:  %s\n", selectedStyle.Render(domainStr)))
+	}
+
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Enter to confirm, d to toggle default, Esc to go back, q to cancel"))
+	b.WriteString(helpStyle.Render("Enter to confirm, d to toggle default, Esc to go back, q to cancel" + m.tabHint()))
 	return b.String()
 }
 
@@ -1156,5 +1646,334 @@ func (m Model) viewWorkspaceOnlyReview() string {
 
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("Enter to create workspace, d to toggle default, Esc to go back, q to cancel"))
+	return b.String()
+}
+
+// --- Content Width ---
+
+// contentWidth returns the available width for step content, accounting for sidebar.
+func (m Model) contentWidth() int {
+	if !m.workspaceOnly && m.step >= stepRole && m.step <= stepReview {
+		w := m.width - sidebarWidth - 2 // 2 for border + gap
+		if w < 40 {
+			w = 40
+		}
+		return w
+	}
+	return m.width
+}
+
+// stepTitle formats a step title like "Step 3/9 — Some title".
+// It adjusts the total count when firewall is disabled (8 instead of 9).
+func (m Model) stepTitle(num int, title string) string {
+	total := len(m.visibleSidebarSteps())
+	return titleStyle.Render(fmt.Sprintf("Step %d/%d — %s", num, total, title))
+}
+
+// tabHint returns ", Tab: sidebar" if the sidebar is available.
+func (m Model) tabHint() string {
+	if !m.isFirstRun && !m.workspaceOnly {
+		return ", Tab: sidebar"
+	}
+	return ""
+}
+
+// firewallEnabled returns true if the firewall setting is currently checked.
+func (m Model) firewallEnabled() bool {
+	return m.checked["setting:firewall"]
+}
+
+// --- Sidebar Navigation ---
+
+// renderSidebar returns the sidebar panel string.
+func (m Model) renderSidebar() string {
+	var b strings.Builder
+	b.WriteString("\n")
+
+	visible := m.visibleSidebarSteps()
+	for i, si := range visible {
+		var line string
+		isCurrent := si.Step == m.step
+		isVisited := m.visitedSteps[si.Step]
+
+		// Cursor prefix when sidebar is focused
+		prefix := "  "
+		if m.sidebarFocused && m.sidebarCursor == i {
+			prefix = cursorStyle.Render("> ")
+		}
+
+		label := fmt.Sprintf("%d. %s", si.Num, si.Label)
+
+		if isCurrent {
+			line = prefix + sidebarActiveStyle.Render(">> "+label)
+		} else if isVisited {
+			line = prefix + sidebarVisitedStyle.Render(label+" ✓")
+		} else {
+			line = prefix + dimStyle.Render(label)
+		}
+
+		b.WriteString(line + "\n")
+	}
+
+	style := sidebarStyle
+	if m.sidebarFocused {
+		style = sidebarFocusedStyle
+	}
+	return style.Render(b.String())
+}
+
+// updateSidebar handles keys when the sidebar is focused.
+func (m Model) updateSidebar(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+
+	visible := m.visibleSidebarSteps()
+
+	switch key.String() {
+	case "up", "k":
+		if m.sidebarCursor > 0 {
+			m.sidebarCursor--
+		}
+	case "down", "j":
+		if m.sidebarCursor < len(visible)-1 {
+			m.sidebarCursor++
+		}
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		idx := int(key.String()[0]-'0') - 1
+		if idx >= 0 && idx < len(visible) {
+			m.sidebarCursor = idx
+		}
+	case "enter":
+		target := visible[m.sidebarCursor].Step
+		if target == m.step {
+			m.sidebarFocused = false
+			return m, nil
+		}
+		m = m.collectCurrentStepState()
+		m.visitedSteps[m.step] = true
+		m.step = target
+		m.cursor = 0
+		m.sidebarFocused = false
+		// If jumping to packages, trigger index load if needed
+		if target == stepPackages && m.pkgIndex == nil && !m.pkgLoading && m.pkgLoadErr == "" {
+			m.pkgLoading = true
+			m.pkgSearchMode = true
+			return m, loadPkgIndex
+		}
+		// Reset domain cursors when jumping to domains
+		if target == stepDomains {
+			m.domainCatCursor = 0
+			m.domainItemCursor = 0
+		}
+	case "tab", "esc":
+		m.sidebarFocused = false
+	}
+	return m, nil
+}
+
+// collectCurrentStepState saves current step data from model fields into m.state.
+func (m Model) collectCurrentStepState() Model {
+	switch m.step {
+	case stepRole:
+		m.state.Roles = nil
+		for _, role := range Roles {
+			if m.checked["role:"+role.Name] {
+				m.state.Roles = append(m.state.Roles, role.Name)
+			}
+		}
+	case stepLanguage:
+		m.state.Languages = nil
+		for _, l := range AllLanguages {
+			if m.checked["lang:"+l.Name] {
+				m.state.Languages = append(m.state.Languages, l.Name)
+			}
+		}
+	case stepTools:
+		m.state.ToolCategories = nil
+		for _, t := range AllToolCategories {
+			if m.checked["tool:"+t.Name] {
+				m.state.ToolCategories = append(m.state.ToolCategories, t.Name)
+			}
+		}
+	case stepPackages:
+		m.state.CustomPackages = nil
+		for pkg := range m.pkgSelected {
+			if m.pkgSelected[pkg] {
+				m.state.CustomPackages = append(m.state.CustomPackages, pkg)
+			}
+		}
+	case stepProfile:
+		m.state.WorkspaceName = strings.TrimSpace(m.workspaceInput)
+	case stepAgents:
+		m.state.Agents = nil
+		for _, a := range AllAgents {
+			if m.checked["agent:"+a.Name] {
+				m.state.Agents = append(m.state.Agents, a.Name)
+			}
+		}
+	case stepSettings:
+		m.state.AutoUpdate = m.checked["setting:auto_update"]
+		m.state.StatusBar = m.checked["setting:status_bar"]
+		m.state.EnableFirewall = m.checked["setting:firewall"]
+		m.state.AutoResume = m.checked["setting:auto_resume"]
+		m.state.PassEnv = m.checked["setting:pass_env"]
+		m.state.ReadOnly = m.checked["setting:read_only"]
+		m.state.MakeDefault = m.checked["setting:make_default"]
+	case stepDomains:
+		m.state.DomainCategories = m.domainCategories
+	}
+	return m
+}
+
+// --- Domains Step ---
+
+func (m Model) updateDomains(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+
+	if m.domainInputMode {
+		return m.updateDomainInput(key)
+	}
+
+	cats := m.domainCategories
+	catCount := len(cats)
+	if catCount == 0 {
+		return m, nil
+	}
+
+	var domCount int
+	if m.domainCatCursor < catCount {
+		domCount = len(cats[m.domainCatCursor].Domains)
+	}
+
+	switch key.String() {
+	case "left", "h":
+		if m.domainCatCursor > 0 {
+			m.domainCatCursor--
+			m.domainItemCursor = 0
+		}
+	case "right", "l":
+		if m.domainCatCursor < catCount-1 {
+			m.domainCatCursor++
+			m.domainItemCursor = 0
+		}
+	case "up", "k":
+		if m.domainItemCursor > 0 {
+			m.domainItemCursor--
+		}
+	case "down", "j":
+		if m.domainItemCursor < domCount-1 {
+			m.domainItemCursor++
+		}
+	case "a":
+		m.domainInputMode = true
+		m.domainInput = ""
+	case "d":
+		if domCount > 0 && m.domainItemCursor < domCount {
+			doms := cats[m.domainCatCursor].Domains
+			m.domainCategories[m.domainCatCursor].Domains = append(doms[:m.domainItemCursor], doms[m.domainItemCursor+1:]...)
+			if m.domainItemCursor >= len(m.domainCategories[m.domainCatCursor].Domains) && m.domainItemCursor > 0 {
+				m.domainItemCursor--
+			}
+		}
+	case "enter":
+		m.state.DomainCategories = m.domainCategories
+		m.visitedSteps[stepDomains] = true
+		m.step = stepReview
+		m.cursor = 0
+	case "esc":
+		m.step = stepSettings
+		m.cursor = 0
+	}
+	return m, nil
+}
+
+func (m Model) updateDomainInput(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "enter":
+		domain := strings.TrimSpace(m.domainInput)
+		if domain != "" {
+			// Dedup check
+			dup := false
+			for _, d := range m.domainCategories[m.domainCatCursor].Domains {
+				if d == domain {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				m.domainCategories[m.domainCatCursor].Domains = append(
+					m.domainCategories[m.domainCatCursor].Domains, domain)
+			}
+		}
+		m.domainInputMode = false
+		m.domainInput = ""
+	case "esc":
+		m.domainInputMode = false
+		m.domainInput = ""
+	case "backspace", "ctrl+h":
+		if len(m.domainInput) > 0 {
+			m.domainInput = m.domainInput[:len(m.domainInput)-1]
+		}
+	default:
+		s := key.String()
+		for _, c := range s {
+			isValid := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+				c == '.' || c == '-' || c == '_' || c == ':' || c == '*'
+			if isValid {
+				m.domainInput += string(c)
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewDomains() string {
+	var b strings.Builder
+	b.WriteString(m.stepTitle(8, "Network allowlist"))
+	b.WriteString("\n\n")
+
+	// Category tabs
+	b.WriteString("  ")
+	for i, cat := range m.domainCategories {
+		label := cat.Name
+		if i == m.domainCatCursor {
+			b.WriteString(selectedStyle.Render("[" + label + "]"))
+		} else {
+			b.WriteString(dimStyle.Render(" " + label + " "))
+		}
+		if i < len(m.domainCategories)-1 {
+			b.WriteString("  ")
+		}
+	}
+	b.WriteString("\n\n")
+
+	// Domains in selected category
+	if m.domainCatCursor < len(m.domainCategories) {
+		domains := m.domainCategories[m.domainCatCursor].Domains
+		if len(domains) == 0 {
+			b.WriteString(dimStyle.Render("    (no domains)\n"))
+		}
+		for i, d := range domains {
+			cursor := "    "
+			if !m.domainInputMode && m.domainItemCursor == i {
+				cursor = cursorStyle.Render("  > ")
+			}
+			b.WriteString(fmt.Sprintf("%s%s\n", cursor, d))
+		}
+	}
+
+	// Input mode
+	if m.domainInputMode {
+		b.WriteString(fmt.Sprintf("\n  Add domain: %s\n", selectedStyle.Render(m.domainInput+"█")))
+	} else {
+		b.WriteString(dimStyle.Render("\n  Press 'a' to add a domain\n"))
+	}
+
+	b.WriteString(helpStyle.Render("\nLeft/Right: category, a: add, d: delete, Enter: confirm, Esc: back" + m.tabHint()))
 	return b.String()
 }

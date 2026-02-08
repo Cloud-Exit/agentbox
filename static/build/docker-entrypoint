@@ -30,8 +30,9 @@ update_tmux_status() {
     display="$(agent_display_name "$AGENT")"
     ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
     ver="${EXITBOX_VERSION:-dev}"
-    tmux set -g status-left " ExitBox  ${display}  [${ws_name}] " 2>/dev/null || true
-    tmux set -g status-right " v${ver}  C-M-p: switch workspace " 2>/dev/null || true
+    tmux set -g status-left " ExitBox  ${display} " 2>/dev/null || true
+    tmux set -g window-status-current-format " Workspace: ${ws_name} " 2>/dev/null || true
+    tmux set -g status-right " ${ver}  C-M-p: switch workspace " 2>/dev/null || true
 }
 
 write_tmux_conf() {
@@ -46,12 +47,13 @@ write_tmux_conf() {
 set -g default-terminal "xterm-256color"
 set -g status-position top
 set -g status-style "bg=colour236,fg=colour255"
-set -g status-left " ExitBox  ${display}  [${ws_name}] "
+set -g status-left " ExitBox  ${display} "
 set -g status-left-length 80
-set -g status-right " v${ver}  C-M-p: switch workspace "
+set -g status-right " ${ver}  C-M-p: switch workspace "
 set -g status-right-length 60
+set -g status-justify centre
 set -g window-status-format ""
-set -g window-status-current-format ""
+set -g window-status-current-format " Workspace: ${ws_name} "
 set -g mouse on
 set -g history-limit 100000
 set -g pane-border-style "fg=colour236"

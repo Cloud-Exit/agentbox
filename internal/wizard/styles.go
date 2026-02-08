@@ -40,7 +40,30 @@ var (
 			Foreground(lipgloss.Color("2")).
 			Bold(true)
 
+	warnStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("1")).
+			Bold(true)
+
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("8")).
 			MarginTop(1)
+
+	sidebarStyle = lipgloss.NewStyle().
+			Width(22).
+			BorderRight(true).
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("8"))
+
+	sidebarFocusedStyle = lipgloss.NewStyle().
+				Width(22).
+				BorderRight(true).
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("6"))
+
+	sidebarActiveStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("6"))
+
+	sidebarVisitedStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("2"))
 )
