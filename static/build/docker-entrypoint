@@ -52,6 +52,8 @@ set -g status-right " v${ver}  C-M-p: switch workspace "
 set -g status-right-length 60
 set -g window-status-format ""
 set -g window-status-current-format ""
+set -g mouse on
+set -g history-limit 100000
 set -g pane-border-style "fg=colour236"
 set -g pane-active-border-style "fg=colour236"
 set -g message-style "bg=colour236,fg=colour255"
@@ -311,8 +313,12 @@ capture_resume_token() {
             token="last"
             ;;
     esac
-    local resume_dir
+    local resume_dir project_key
     resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
+    if [[ -n "${EXITBOX_PROJECT_KEY:-}" ]]; then
+        project_key="${EXITBOX_PROJECT_KEY//[^a-zA-Z0-9._-]/_}"
+        resume_dir="${resume_dir}/projects/${project_key}"
+    fi
     mkdir -p "$resume_dir"
     if [[ -n "$token" ]]; then
         echo "$token" > "${resume_dir}/.resume-token"
@@ -321,15 +327,18 @@ capture_resume_token() {
 
 build_resume_args() {
     RESUME_ARGS=()
+    local resume_dir resume_file project_key
+    resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
+    if [[ -n "${EXITBOX_PROJECT_KEY:-}" ]]; then
+        project_key="${EXITBOX_PROJECT_KEY//[^a-zA-Z0-9._-]/_}"
+        resume_dir="${resume_dir}/projects/${project_key}"
+    fi
+    resume_file="${resume_dir}/.resume-token"
     if [[ "${EXITBOX_AUTO_RESUME:-true}" != "true" ]]; then
         # Clear any existing token when auto-resume is disabled
-        local resume_file
-        resume_file="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}/.resume-token"
         rm -f "$resume_file"
         return
     fi
-    local resume_file
-    resume_file="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}/.resume-token"
     if [[ -f "$resume_file" ]]; then
         local token
         token="$(cat "$resume_file")"
@@ -542,7 +551,12 @@ if [[ $# -eq 0 && -n "$AGENT" && -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v
     TMUX_EXIT=$?
 
     # Show resume status after tmux exits (visible on the host terminal)
-    resume_file="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}/.resume-token"
+    resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
+    if [[ -n "${EXITBOX_PROJECT_KEY:-}" ]]; then
+        project_key="${EXITBOX_PROJECT_KEY//[^a-zA-Z0-9._-]/_}"
+        resume_dir="${resume_dir}/projects/${project_key}"
+    fi
+    resume_file="${resume_dir}/.resume-token"
     if [[ -f "$resume_file" ]] && [[ "${EXITBOX_AUTO_RESUME:-true}" == "true" ]]; then
         echo ""
         echo "[INFO] Session saved. Next run will auto-resume this conversation."

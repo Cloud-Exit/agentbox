@@ -34,21 +34,21 @@ import (
 
 // Options holds all the flags for running a container.
 type Options struct {
-	Agent              string
-	ProjectDir         string
-	WorkspaceHash      string
-	WorkspaceOverride  string
-	NoFirewall         bool
-	ReadOnly           bool
-	NoEnv              bool
-	NoResume           bool
-	EnvVars            []string
-	IncludeDirs        []string
-	AllowURLs          []string
-	Passthrough        []string
-	Verbose            bool
-	StatusBar          bool
-	Version            string
+	Agent             string
+	ProjectDir        string
+	WorkspaceHash     string
+	WorkspaceOverride string
+	NoFirewall        bool
+	ReadOnly          bool
+	NoEnv             bool
+	NoResume          bool
+	EnvVars           []string
+	IncludeDirs       []string
+	AllowURLs         []string
+	Passthrough       []string
+	Verbose           bool
+	StatusBar         bool
+	Version           string
 }
 
 // AgentContainer runs an agent container interactively.
@@ -151,6 +151,7 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 
 	// Environment variables
 	projectName := filepath.Base(opts.ProjectDir)
+	projectKey := project.GenerateFolderName(opts.ProjectDir)
 	if !opts.NoEnv {
 		args = append(args,
 			"-e", "NODE_ENV="+getEnvOr("NODE_ENV", "production"),
@@ -175,6 +176,7 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	args = append(args,
 		"-e", "EXITBOX_AGENT="+opts.Agent,
 		"-e", "EXITBOX_PROJECT_NAME="+projectName,
+		"-e", "EXITBOX_PROJECT_KEY="+projectKey,
 		"-e", "EXITBOX_VERSION="+opts.Version,
 		"-e", "EXITBOX_STATUS_BAR="+fmt.Sprint(opts.StatusBar),
 		"-e", "EXITBOX_AUTO_RESUME="+fmt.Sprint(!opts.NoResume),
@@ -237,6 +239,7 @@ func isReservedEnvVar(key string) bool {
 	reserved := map[string]bool{
 		"EXITBOX_AGENT":           true,
 		"EXITBOX_PROJECT_NAME":    true,
+		"EXITBOX_PROJECT_KEY":     true,
 		"EXITBOX_WORKSPACE_SCOPE": true,
 		"EXITBOX_WORKSPACE_NAME":  true,
 		"EXITBOX_VERSION":         true,

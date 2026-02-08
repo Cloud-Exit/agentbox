@@ -80,6 +80,7 @@ func TestIsReservedEnvVar(t *testing.T) {
 	reserved := []string{
 		"EXITBOX_AGENT",
 		"EXITBOX_PROJECT_NAME",
+		"EXITBOX_PROJECT_KEY",
 		"EXITBOX_WORKSPACE_SCOPE",
 		"EXITBOX_WORKSPACE_NAME",
 		"EXITBOX_VERSION",

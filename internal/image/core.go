@@ -82,8 +82,10 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 
 	if !ui.Verbose {
 		ui.Info("Building containers (use -v for build output)")
-		ui.Infof("%sDisable auto_update in config to skip update checks and speed up launches.%s", ui.Dim, ui.NC)
-		ui.Infof("%sRun 'exitbox rebuild %s' to manually update.%s", ui.Dim, agentName, ui.NC)
+		if AutoUpdate {
+			ui.Infof("%sDisable auto_update in config to skip update checks and speed up launches.%s", ui.Dim, ui.NC)
+			ui.Infof("%sRun 'exitbox rebuild %s' to manually update.%s", ui.Dim, agentName, ui.NC)
+		}
 	} else {
 		ui.Infof("Building %s core image with %s...", agentName, cmd)
 	}

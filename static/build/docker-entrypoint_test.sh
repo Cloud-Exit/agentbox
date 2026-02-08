@@ -16,6 +16,16 @@ assert_eq() {
     fi
 }
 
+assert_contains() {
+    local desc="$1" haystack="$2" needle="$3"
+    if [[ "$haystack" == *"$needle"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: $desc: expected output to contain '$needle'")
+    fi
+}
+
 assert_file_content() {
     local desc="$1" filepath="$2" expected="$3"
     if [[ -f "$filepath" ]]; then
@@ -59,6 +69,8 @@ extract_func() {
 
 CAPTURE_FUNC="$(extract_func capture_resume_token)"
 BUILD_FUNC="$(extract_func build_resume_args)"
+DISPLAY_FUNC="$(extract_func agent_display_name)"
+TMUX_CONF_FUNC="$(extract_func write_tmux_conf)"
 
 # ============================================================================
 # Test: capture_resume_token for Claude
@@ -280,6 +292,97 @@ test_build_resume_args_no_token() {
 }
 
 # ============================================================================
+# Test: capture_resume_token is scoped by project key
+# ============================================================================
+test_capture_resume_token_project_scoped() {
+    local tmpdir="$TEST_TMPDIR/crt_project_scoped"
+    mkdir -p "$tmpdir"
+
+    local result
+    result="$(
+        AGENT="codex"
+        EXITBOX_AUTO_RESUME="true"
+        GLOBAL_WORKSPACE_ROOT="$tmpdir"
+        EXITBOX_WORKSPACE_NAME="default"
+        EXITBOX_PROJECT_KEY="project_a"
+        tmux() { echo "some codex output"; }
+        eval "$CAPTURE_FUNC"
+        capture_resume_token
+    )" 2>/dev/null
+
+    assert_file_content "capture_resume_token (project scoped)" \
+        "$tmpdir/default/codex/projects/project_a/.resume-token" "last"
+    assert_file_missing "capture_resume_token (project scoped avoids legacy path)" \
+        "$tmpdir/default/codex/.resume-token"
+}
+
+# ============================================================================
+# Test: build_resume_args with project key ignores legacy global token
+# ============================================================================
+test_build_resume_args_project_scoped_ignores_global() {
+    local tmpdir="$TEST_TMPDIR/bra_project_scope_ignore_global"
+    mkdir -p "$tmpdir/default/codex"
+    echo "last" > "$tmpdir/default/codex/.resume-token"
+
+    local result
+    result="$(
+        AGENT="codex"
+        EXITBOX_AUTO_RESUME="true"
+        GLOBAL_WORKSPACE_ROOT="$tmpdir"
+        EXITBOX_WORKSPACE_NAME="default"
+        EXITBOX_PROJECT_KEY="project_b"
+        eval "$BUILD_FUNC"
+        build_resume_args
+        echo "${RESUME_ARGS[*]}"
+    )" 2>/dev/null
+
+    assert_eq "build_resume_args (project scoped ignores global)" "" "$result"
+}
+
+# ============================================================================
+# Test: build_resume_args with project key reads matching scoped token
+# ============================================================================
+test_build_resume_args_project_scoped_reads_scoped_token() {
+    local tmpdir="$TEST_TMPDIR/bra_project_scope_reads_scoped"
+    mkdir -p "$tmpdir/default/codex/projects/project_c"
+    echo "last" > "$tmpdir/default/codex/projects/project_c/.resume-token"
+
+    local result
+    result="$(
+        AGENT="codex"
+        EXITBOX_AUTO_RESUME="true"
+        GLOBAL_WORKSPACE_ROOT="$tmpdir"
+        EXITBOX_WORKSPACE_NAME="default"
+        EXITBOX_PROJECT_KEY="project_c"
+        eval "$BUILD_FUNC"
+        build_resume_args
+        echo "${RESUME_ARGS[*]}"
+    )" 2>/dev/null
+
+    assert_eq "build_resume_args (project scoped reads scoped token)" "resume --last" "$result"
+}
+
+# ============================================================================
+# Test: write_tmux_conf includes scrolling settings
+# ============================================================================
+test_write_tmux_conf_scroll_settings() {
+    local output
+    output="$(
+        AGENT="codex"
+        EXITBOX_WORKSPACE_NAME="default"
+        EXITBOX_VERSION="test"
+        EXITBOX_STATUS_BAR="true"
+        eval "$DISPLAY_FUNC"
+        eval "$TMUX_CONF_FUNC"
+        conf_path="$(write_tmux_conf)"
+        cat "$conf_path"
+    )" 2>/dev/null
+
+    assert_contains "write_tmux_conf enables mouse scrolling" "$output" 'set -g mouse on'
+    assert_contains "write_tmux_conf sets large history" "$output" 'set -g history-limit 100000'
+}
+
+# ============================================================================
 # Run all tests
 # ============================================================================
 
@@ -296,6 +399,10 @@ test_build_resume_args_codex
 test_build_resume_args_opencode
 test_build_resume_args_disabled
 test_build_resume_args_no_token
+test_capture_resume_token_project_scoped
+test_build_resume_args_project_scoped_ignores_global
+test_build_resume_args_project_scoped_reads_scoped_token
+test_write_tmux_conf_scroll_settings
 
 # ============================================================================
 # Results
