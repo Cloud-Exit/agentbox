@@ -297,8 +297,20 @@ capture_resume_token() {
         return
     fi
     local token=""
-    # Match: <agent> --resume <token>  or  <agent> -r <token>
-    token="$(echo "$output" | grep -oE "${AGENT} (--resume|-r) [^ ]+" | tail -1 | awk '{print $NF}')"
+    case "$AGENT" in
+        claude)
+            # Match: claude --resume <token>  or  claude -r <token>
+            token="$(echo "$output" | grep -oE "${AGENT} (--resume|-r) [^ ]+" | tail -1 | awk '{print $NF}')"
+            ;;
+        codex)
+            # Codex auto-saves sessions to ~/.codex/sessions/; no token printed at exit
+            token="last"
+            ;;
+        opencode)
+            # OpenCode auto-saves sessions locally; no token printed at exit
+            token="last"
+            ;;
+    esac
     local resume_dir
     resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
     mkdir -p "$resume_dir"
@@ -322,7 +334,17 @@ build_resume_args() {
         local token
         token="$(cat "$resume_file")"
         if [[ -n "$token" ]]; then
-            RESUME_ARGS=("--resume" "$token")
+            case "$AGENT" in
+                claude)
+                    RESUME_ARGS=("--resume" "$token")
+                    ;;
+                codex)
+                    RESUME_ARGS=("resume" "--last")
+                    ;;
+                opencode)
+                    RESUME_ARGS=("--continue")
+                    ;;
+            esac
         fi
     fi
 }
@@ -359,13 +381,27 @@ run_agent_loop() {
 
     build_resume_args
 
-    # Check if user already passed --resume or -r in their args
+    # Check if user already passed resume-related flags in their args
     local user_has_resume=false
     for arg in "$@"; do
-        if [[ "$arg" == "--resume" || "$arg" == "-r" ]]; then
-            user_has_resume=true
-            break
-        fi
+        case "$AGENT" in
+            claude)
+                if [[ "$arg" == "--resume" || "$arg" == "-r" ]]; then
+                    user_has_resume=true
+                fi
+                ;;
+            codex)
+                if [[ "$arg" == "resume" ]]; then
+                    user_has_resume=true
+                fi
+                ;;
+            opencode)
+                if [[ "$arg" == "--continue" || "$arg" == "-c" || "$arg" == "--session" || "$arg" == "-s" ]]; then
+                    user_has_resume=true
+                fi
+                ;;
+        esac
+        [[ "$user_has_resume" == "true" ]] && break
     done
 
     set +e
