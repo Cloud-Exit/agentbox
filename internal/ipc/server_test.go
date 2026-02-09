@@ -37,7 +37,9 @@ func TestServerRoundTrip(t *testing.T) {
 	payload, _ := json.Marshal(map[string]string{"msg": "hello"})
 	req.Payload = payload
 	data, _ := json.Marshal(req)
-	conn.Write(append(data, '\n'))
+	if _, err = conn.Write(append(data, '\n')); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {

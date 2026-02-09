@@ -157,5 +157,5 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	data, _ := json.Marshal(resp)
-	conn.Write(append(data, '\n'))
+	_, _ = conn.Write(append(data, '\n'))
 }
