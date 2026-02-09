@@ -76,6 +76,18 @@ ENV PATH="/home/user/.venv/bin:$PATH"
     rm -f /tmp/go.tar.gz && \
     ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
     ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+RUN set -e && \
+    case "$(uname -m)" in \
+        x86_64|amd64) LINT_ARCH="amd64" ;; \
+        aarch64|arm64) LINT_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture" >&2; exit 1 ;; \
+    esac && \
+    LINT_VERSION="v1.64.8" && \
+    wget -q -O /tmp/golangci-lint.tar.gz "https://github.com/golangci/golangci-lint/releases/download/${LINT_VERSION}/golangci-lint-${LINT_VERSION#v}-linux-${LINT_ARCH}.tar.gz" && \
+    tar -xzf /tmp/golangci-lint.tar.gz -C /tmp && \
+    mv /tmp/golangci-lint-${LINT_VERSION#v}-linux-${LINT_ARCH}/golangci-lint /usr/local/bin/golangci-lint && \
+    chmod +x /usr/local/bin/golangci-lint && \
+    rm -rf /tmp/golangci-lint*
 `
 	case "flutter":
 		return `RUN set -e && \
