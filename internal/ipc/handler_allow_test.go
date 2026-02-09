@@ -126,7 +126,9 @@ func sendAllowDomain(t *testing.T, srv *Server, domain string) AllowDomainRespon
 		Payload: payload,
 	}
 	data, _ := json.Marshal(req)
-	conn.Write(append(data, '\n'))
+	if _, err = conn.Write(append(data, '\n')); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {

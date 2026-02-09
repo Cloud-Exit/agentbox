@@ -233,24 +233,6 @@ func applyLanguageDelta(original []string, selectedLanguages []string) []string 
 	return result
 }
 
-// mergePackages combines category packages and custom packages, deduplicating.
-func mergePackages(categoryPkgs, customPkgs []string) []string {
-	seen := make(map[string]bool, len(categoryPkgs))
-	result := make([]string, 0, len(categoryPkgs)+len(customPkgs))
-	for _, p := range categoryPkgs {
-		if !seen[p] {
-			seen[p] = true
-			result = append(result, p)
-		}
-	}
-	for _, p := range customPkgs {
-		if !seen[p] {
-			seen[p] = true
-			result = append(result, p)
-		}
-	}
-	return result
-}
 
 func upsertWorkspace(list []config.Workspace, item config.Workspace) []config.Workspace {
 	for i := range list {

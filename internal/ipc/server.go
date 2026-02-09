@@ -123,7 +123,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
 		resp := Response{Type: "error", Payload: AllowDomainResponse{Error: "invalid request"}}
 		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
+		_, _ = conn.Write(append(data, '\n'))
 		return
 	}
 
@@ -137,7 +137,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			},
 		}
 		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
+		_, _ = conn.Write(append(data, '\n'))
 		return
 	}
 

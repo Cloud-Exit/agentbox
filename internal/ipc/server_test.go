@@ -16,7 +16,9 @@ func TestServerRoundTrip(t *testing.T) {
 
 	srv.Handle("echo", func(req *Request) (interface{}, error) {
 		var payload map[string]string
-		json.Unmarshal(req.Payload, &payload)
+		if err := json.Unmarshal(req.Payload, &payload); err != nil {
+			return nil, err
+		}
 		return payload, nil
 	})
 	srv.Start()
@@ -57,7 +59,9 @@ func TestServerRoundTrip(t *testing.T) {
 	// Decode payload.
 	raw, _ := json.Marshal(resp.Payload)
 	var got map[string]string
-	json.Unmarshal(raw, &got)
+	if err = json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
 	if got["msg"] != "hello" {
 		t.Errorf("payload msg = %q, want hello", got["msg"])
 	}
@@ -79,7 +83,9 @@ func TestServerUnknownType(t *testing.T) {
 
 	req := Request{Type: "nonexistent", ID: "test-2"}
 	data, _ := json.Marshal(req)
-	conn.Write(append(data, '\n'))
+	if _, err = conn.Write(append(data, '\n')); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
 
 	scanner := bufio.NewScanner(conn)
 	if !scanner.Scan() {
@@ -87,11 +93,15 @@ func TestServerUnknownType(t *testing.T) {
 	}
 
 	var resp Response
-	json.Unmarshal(scanner.Bytes(), &resp)
+	if err = json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
 
 	raw, _ := json.Marshal(resp.Payload)
 	var payload AllowDomainResponse
-	json.Unmarshal(raw, &payload)
+	if err = json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
 
 	if payload.Error == "" {
 		t.Error("expected error for unknown type")

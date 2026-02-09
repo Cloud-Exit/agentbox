@@ -136,6 +136,6 @@ func requestAllow(socketPath, domain string) (bool, error) {
 
 func randomID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return fmt.Sprintf("%x", b)
 }

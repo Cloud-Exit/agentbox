@@ -53,6 +53,10 @@ ENTRYPOINT="$SCRIPT_DIR/docker-entrypoint"
 TEST_TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TEST_TMPDIR"' EXIT
 
+# Clear env vars that might leak from a host ExitBox sandbox and affect tests.
+unset EXITBOX_PROJECT_KEY EXITBOX_WORKSPACE_NAME EXITBOX_WORKSPACE_SCOPE
+unset EXITBOX_AGENT EXITBOX_AUTO_RESUME EXITBOX_IPC_SOCKET
+
 # Extract functions from the entrypoint using awk (handles nested braces)
 extract_func() {
     local func_name="$1"
@@ -161,10 +165,11 @@ test_capture_resume_token_opencode() {
 }
 
 # ============================================================================
-# Test: capture_resume_token disabled
+# Test: capture_resume_token always captures (even when auto-resume is off)
+# Token is always saved so the user can use explicit --resume later.
 # ============================================================================
-test_capture_resume_token_disabled() {
-    local tmpdir="$TEST_TMPDIR/crt_disabled"
+test_capture_resume_token_always() {
+    local tmpdir="$TEST_TMPDIR/crt_always"
     mkdir -p "$tmpdir"
 
     local result
@@ -173,13 +178,13 @@ test_capture_resume_token_disabled() {
         EXITBOX_AUTO_RESUME="false"
         GLOBAL_WORKSPACE_ROOT="$tmpdir"
         EXITBOX_WORKSPACE_NAME="default"
-        tmux() { echo "claude --resume shouldnotcapture"; }
+        tmux() { echo "claude --resume alwayscaptured"; }
         eval "$CAPTURE_FUNC"
         capture_resume_token
     )" 2>/dev/null
 
-    assert_file_missing "capture_resume_token (disabled)" \
-        "$tmpdir/default/claude/.resume-token"
+    assert_file_content "capture_resume_token (always captures)" \
+        "$tmpdir/default/claude/.resume-token" "alwayscaptured"
 }
 
 # ============================================================================
@@ -249,7 +254,7 @@ test_build_resume_args_opencode() {
 }
 
 # ============================================================================
-# Test: build_resume_args disabled clears token
+# Test: build_resume_args disabled does not use token (but file remains)
 # ============================================================================
 test_build_resume_args_disabled() {
     local tmpdir="$TEST_TMPDIR/bra_disabled"
@@ -264,10 +269,10 @@ test_build_resume_args_disabled() {
         EXITBOX_WORKSPACE_NAME="default"
         eval "$BUILD_FUNC"
         build_resume_args
+        echo "${RESUME_ARGS[*]}"
     )" 2>/dev/null
 
-    assert_file_missing "build_resume_args (disabled removes token)" \
-        "$tmpdir/default/claude/.resume-token"
+    assert_eq "build_resume_args (disabled gives empty args)" "" "$result"
 }
 
 # ============================================================================
@@ -393,7 +398,7 @@ test_capture_resume_token_claude
 test_capture_resume_token_claude_short
 test_capture_resume_token_codex
 test_capture_resume_token_opencode
-test_capture_resume_token_disabled
+test_capture_resume_token_always
 test_build_resume_args_claude
 test_build_resume_args_codex
 test_build_resume_args_opencode
