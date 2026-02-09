@@ -24,10 +24,17 @@ import (
 	"github.com/cloud-exit/exitbox/internal/config"
 )
 
+// SetupResult holds post-wizard actions for the caller to execute.
+type SetupResult struct {
+	WorkspaceName string   // the workspace that was created/edited
+	CopyFrom      string   // workspace to copy credentials from ("__host__" = import from host, "" = skip)
+	IsDefault     bool     // true if this workspace is the default
+	Agents        []string // enabled agent names (e.g. ["claude", "codex"])
+}
+
 // Run executes the setup wizard TUI and writes config files on completion.
 // If existingCfg is non-nil, the wizard is pre-populated from it.
-// Returns nil on success, error if cancelled or write fails.
-func Run(existingCfg *config.Config) error {
+func Run(existingCfg *config.Config) (*SetupResult, error) {
 	var model Model
 	if existingCfg != nil {
 		model = NewModelFromConfig(existingCfg)
@@ -38,33 +45,53 @@ func Run(existingCfg *config.Config) error {
 
 	finalModel, err := p.Run()
 	if err != nil {
-		return fmt.Errorf("wizard error: %w", err)
+		return nil, fmt.Errorf("wizard error: %w", err)
 	}
 
 	wm := finalModel.(Model)
 	if wm.Cancelled() {
-		return fmt.Errorf("setup cancelled")
+		return nil, fmt.Errorf("setup cancelled")
 	}
 	if !wm.Confirmed() {
-		return fmt.Errorf("setup cancelled")
+		return nil, fmt.Errorf("setup cancelled")
 	}
 
-	return applyResult(wm.Result(), existingCfg)
+	if err := applyResult(wm.Result(), existingCfg); err != nil {
+		return nil, err
+	}
+
+	result := wm.Result()
+	wsName := activeWorkspaceNameOrDefault(result.WorkspaceName)
+	isDefault := result.MakeDefault || strings.EqualFold(result.DefaultWorkspace, wsName)
+
+	return &SetupResult{
+		WorkspaceName: wsName,
+		CopyFrom:      result.CopyFrom,
+		IsDefault:     isDefault,
+		Agents:        result.Agents,
+	}, nil
+}
+
+// WorkspaceCreationResult holds the result of the workspace creation wizard.
+type WorkspaceCreationResult struct {
+	Workspace   *config.Workspace
+	MakeDefault bool
+	CopyFrom    string // workspace to copy credentials from (empty = none)
 }
 
 // RunWorkspaceCreation runs the wizard from step 1 and returns a configured workspace.
-func RunWorkspaceCreation(existingCfg *config.Config, workspaceName string) (*config.Workspace, bool, error) {
+func RunWorkspaceCreation(existingCfg *config.Config, workspaceName string) (*WorkspaceCreationResult, error) {
 	model := NewWorkspaceModelFromConfig(existingCfg, workspaceName)
 
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
-		return nil, false, fmt.Errorf("wizard error: %w", err)
+		return nil, fmt.Errorf("wizard error: %w", err)
 	}
 
 	wm := finalModel.(Model)
 	if wm.Cancelled() || !wm.Confirmed() {
-		return nil, false, fmt.Errorf("setup cancelled")
+		return nil, fmt.Errorf("setup cancelled")
 	}
 
 	name := strings.TrimSpace(wm.Result().WorkspaceName)
@@ -75,10 +102,15 @@ func RunWorkspaceCreation(existingCfg *config.Config, workspaceName string) (*co
 		name = "default"
 	}
 
-	return &config.Workspace{
-		Name:        name,
-		Development: ComputeProfiles(wm.Result().Roles, wm.Result().Languages),
-	}, wm.Result().MakeDefault, nil
+	return &WorkspaceCreationResult{
+		Workspace: &config.Workspace{
+			Name:        name,
+			Development: ComputeProfiles(wm.Result().Roles, wm.Result().Languages),
+			Packages:    wm.Result().CustomPackages,
+		},
+		MakeDefault: wm.Result().MakeDefault,
+		CopyFrom:    wm.Result().CopyFrom,
+	}, nil
 }
 
 func applyResult(state State, existingCfg *config.Config) error {
@@ -112,6 +144,7 @@ func applyResult(state State, existingCfg *config.Config) error {
 	cfg.Workspaces.Items = upsertWorkspace(cfg.Workspaces.Items, config.Workspace{
 		Name:        workspaceName,
 		Development: development,
+		Packages:    state.CustomPackages,
 	})
 	cfg.Settings.DefaultWorkspace = state.DefaultWorkspace
 
@@ -120,7 +153,7 @@ func applyResult(state State, existingCfg *config.Config) error {
 		cfg.SetAgentEnabled(name, true)
 	}
 
-	cfg.Tools.User = mergePackages(ComputePackages(state.ToolCategories), state.CustomPackages)
+	cfg.Tools.User = ComputePackages(state.ToolCategories)
 	cfg.Tools.Binaries = nil
 	for _, b := range ComputeBinaries(state.ToolCategories) {
 		cfg.Tools.Binaries = append(cfg.Tools.Binaries, config.BinaryConfig{

@@ -37,6 +37,7 @@ type WorkspaceCatalog struct {
 type Workspace struct {
 	Name        string   `yaml:"name"`
 	Development []string `yaml:"development,omitempty"`
+	Packages    []string `yaml:"packages,omitempty"`
 	Directory   string   `yaml:"directory,omitempty"`
 }
 

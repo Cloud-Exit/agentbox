@@ -276,6 +276,57 @@ func CleanupSquidIfUnused(rt container.Runtime) {
 	}
 }
 
+// AddSessionURLAndReload adds a domain to a container's session URLs and
+// hot-reloads Squid so the change takes effect immediately.
+func AddSessionURLAndReload(rt container.Runtime, containerName string, domain string) error {
+	cmd := container.Cmd(rt)
+	dir := sessionDir()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	// Read existing session URLs for this container.
+	urlFile := filepath.Join(dir, containerName+".urls")
+	var urls []string
+	if data, err := os.ReadFile(urlFile); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				urls = append(urls, line)
+			}
+		}
+	}
+
+	// Deduplicate: skip if already present.
+	for _, u := range urls {
+		if u == domain {
+			return nil // already allowed
+		}
+	}
+	urls = append(urls, domain)
+
+	// Write back and regenerate config.
+	if err := RegisterSessionURLs(containerName, urls); err != nil {
+		return err
+	}
+
+	allURLs := collectAllSessionURLs()
+	if err := writeSquidConfig(rt, allURLs); err != nil {
+		return err
+	}
+
+	// Hot-reload Squid.
+	names, _ := rt.PS("", "{{.Names}}")
+	for _, n := range names {
+		if n == SquidContainer {
+			_ = exec.Command(cmd, "exec", SquidContainer, "squid", "-k", "reconfigure").Run()
+			break
+		}
+	}
+
+	return nil
+}
+
 func writeSquidConfig(rt container.Runtime, extraURLs []string) error {
 	subnet, err := GetNetworkSubnet(rt, InternalNetwork)
 	if err != nil {

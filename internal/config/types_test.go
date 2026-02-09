@@ -132,8 +132,8 @@ func TestDefaultConfig_Values(t *testing.T) {
 	if !cfg.Settings.StatusBar {
 		t.Error("Settings.StatusBar should be true by default")
 	}
-	if !cfg.Settings.DefaultFlags.AutoResume {
-		t.Error("Settings.DefaultFlags.AutoResume should be true by default")
+	if cfg.Settings.DefaultFlags.AutoResume {
+		t.Error("Settings.DefaultFlags.AutoResume should be false by default")
 	}
 
 	// All agents disabled by default

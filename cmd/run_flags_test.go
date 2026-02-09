@@ -97,6 +97,46 @@ func TestParseRunFlags_DefaultsFromConfig(t *testing.T) {
 	}
 }
 
+func TestParseRunFlags_Resume(t *testing.T) {
+	// --resume without token
+	f := parseRunFlags([]string{"--resume"}, config.DefaultFlags{})
+	if !f.Resume {
+		t.Error("--resume should set Resume=true")
+	}
+	if f.ResumeToken != "" {
+		t.Errorf("expected empty token, got %q", f.ResumeToken)
+	}
+}
+
+func TestParseRunFlags_ResumeWithToken(t *testing.T) {
+	f := parseRunFlags([]string{"--resume", "abc123"}, config.DefaultFlags{})
+	if !f.Resume {
+		t.Error("--resume should set Resume=true")
+	}
+	if f.ResumeToken != "abc123" {
+		t.Errorf("expected token abc123, got %q", f.ResumeToken)
+	}
+}
+
+func TestParseRunFlags_NoResumeOverridesDefault(t *testing.T) {
+	f := parseRunFlags([]string{"--no-resume"}, config.DefaultFlags{AutoResume: true})
+	if f.Resume {
+		t.Error("--no-resume should override AutoResume default")
+	}
+}
+
+func TestParseRunFlags_ResumeDefaultFromConfig(t *testing.T) {
+	f := parseRunFlags(nil, config.DefaultFlags{AutoResume: true})
+	if !f.Resume {
+		t.Error("Resume should be true when AutoResume config default is true")
+	}
+
+	f = parseRunFlags(nil, config.DefaultFlags{AutoResume: false})
+	if f.Resume {
+		t.Error("Resume should be false when AutoResume config default is false")
+	}
+}
+
 func TestParseRunFlags_UnknownArgsPassedThrough(t *testing.T) {
 	f := parseRunFlags([]string{"--custom-flag", "value"}, config.DefaultFlags{})
 	if len(f.Remaining) != 2 || f.Remaining[0] != "--custom-flag" || f.Remaining[1] != "value" {

@@ -36,7 +36,7 @@ func DefaultConfig() *Config {
 			StatusBar:        true,
 			DefaultWorkspace: "default",
 			DefaultFlags: DefaultFlags{
-				AutoResume: true,
+				AutoResume: false,
 			},
 		},
 	}

@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
@@ -77,8 +76,8 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 		return err
 	}
 
-	// Rebuild squid when any agent is rebuilt
-	_ = BuildSquid(ctx, rt, true)
+	// Build squid if missing (no longer force-rebuilt on every core rebuild)
+	_ = BuildSquid(ctx, rt, false)
 
 	if !ui.Verbose {
 		ui.Info("Building containers (use -v for build output)")
@@ -181,12 +180,6 @@ func BuildCore(ctx context.Context, rt container.Runtime, agentName string, forc
 	)
 
 	if err := buildImage(rt, args, fmt.Sprintf("Building %s core image...", agentName)); err != nil {
-		cfg := config.LoadOrDefault()
-		if len(cfg.Tools.User) > 0 {
-			ui.Warnf("User tools in config: %s", strings.Join(cfg.Tools.User, ", "))
-			ui.Warnf("If a package was not found, check your config: %s", config.ConfigFile())
-			ui.Warnf("Packages must be valid Alpine Linux (apk) package names.")
-		}
 		return fmt.Errorf("failed to build %s core image: %w", agentName, err)
 	}
 

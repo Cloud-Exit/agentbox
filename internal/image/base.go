@@ -18,11 +18,10 @@ package image
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"time"
 
 	"github.com/cloud-exit/exitbox/internal/config"
@@ -48,21 +47,12 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 	imageName := "exitbox-base"
 	cmd := container.Cmd(rt)
 
-	// Compute config hash for cache detection (tools, binaries, session tools)
-	cfg := config.LoadOrDefault()
-	configHash := computeConfigHash(cfg)
-
 	if !force && !ForceRebuild && rt.ImageExists(imageName) {
 		v, _ := rt.ImageInspect(imageName, `{{index .Config.Labels "exitbox.version"}}`)
-		ch, _ := rt.ImageInspect(imageName, `{{index .Config.Labels "exitbox.config.hash"}}`)
-		if v == Version && ch == configHash {
+		if v == Version {
 			return nil
 		}
-		if v != Version {
-			ui.Infof("Base image version mismatch (%s != %s). Rebuilding...", v, Version)
-		} else {
-			ui.Info("Configuration changed. Rebuilding base image...")
-		}
+		ui.Infof("Base image version mismatch (%s != %s). Rebuilding...", v, Version)
 	}
 
 	ui.Infof("Building base image with %s...", cmd)
@@ -82,30 +72,20 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 		return fmt.Errorf("failed to write .dockerignore: %w", err)
 	}
 
-	// Append user tools and session tools as extra apk install layer
-	userTools := cfg.Tools.User
-	if len(SessionTools) > 0 {
-		userTools = append(userTools, SessionTools...)
+	// Write pre-built exitbox-allow binary for the container's architecture.
+	var allowBin []byte
+	switch runtime.GOARCH {
+	case "arm64":
+		allowBin = static.ExitboxAllowArm64
+	default:
+		allowBin = static.ExitboxAllowAmd64
 	}
-	if len(userTools) > 0 {
-		extra := fmt.Sprintf("\n# User tools (from config)\nRUN apk add --no-cache %s\n", strings.Join(userTools, " "))
+	if err := os.WriteFile(filepath.Join(buildCtx, "exitbox-allow"), allowBin, 0755); err != nil {
+		ui.Warnf("Failed to write exitbox-allow: %v", err)
+	} else {
+		extra := "\n# IPC client\nCOPY exitbox-allow /usr/local/bin/exitbox-allow\n"
 		if err := appendToFile(dockerfilePath, extra); err != nil {
-			return fmt.Errorf("failed to append user tools to Dockerfile: %w", err)
-		}
-	}
-
-	// Append binary download steps for tools not available via apk
-	if len(cfg.Tools.Binaries) > 0 {
-		var extra string
-		for _, b := range cfg.Tools.Binaries {
-			extra += fmt.Sprintf("\n# Install %s (binary download)\n", b.Name)
-			extra += "RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \\\n"
-			url := strings.ReplaceAll(b.URLPattern, "{arch}", "${ARCH}")
-			extra += fmt.Sprintf("    curl -sL \"%s\" -o /usr/local/bin/%s && \\\n", url, b.Name)
-			extra += fmt.Sprintf("    chmod +x /usr/local/bin/%s\n", b.Name)
-		}
-		if err := appendToFile(dockerfilePath, extra); err != nil {
-			return fmt.Errorf("failed to append binary downloads to Dockerfile: %w", err)
+			ui.Warnf("Failed to append exitbox-allow to Dockerfile: %v", err)
 		}
 	}
 
@@ -115,18 +95,12 @@ func BuildBase(ctx context.Context, rt container.Runtime, force bool) error {
 		"--build-arg", fmt.Sprintf("GROUP_ID=%d", os.Getgid()),
 		"--build-arg", "USERNAME=user",
 		"--build-arg", fmt.Sprintf("EXITBOX_VERSION=%s", Version),
-		"--label", fmt.Sprintf("exitbox.config.hash=%s", configHash),
 		"-t", imageName,
 		"-f", filepath.Join(buildCtx, "Dockerfile"),
 		buildCtx,
 	)
 
 	if err := buildImage(rt, args, "Building base image..."); err != nil {
-		if len(cfg.Tools.User) > 0 {
-			ui.Warnf("User tools in config: %s", strings.Join(cfg.Tools.User, ", "))
-			ui.Warnf("If a package was not found, check your config: %s", config.ConfigFile())
-			ui.Warnf("Packages must be valid Alpine Linux (apk) package names.")
-		}
 		return fmt.Errorf("failed to build base image: %w", err)
 	}
 
@@ -173,20 +147,14 @@ func buildArgs(cmd string) []string {
 		args = append(args, "--layers", "--pull=newer")
 	} else {
 		os.Setenv("DOCKER_BUILDKIT", "1")
-		args = append(args, "--progress=auto")
+		cacheDir := filepath.Join(config.Cache, "buildx")
+		_ = os.MkdirAll(cacheDir, 0755)
+		args = append(args,
+			"--progress=auto",
+			"--cache-from", "type=local,src="+cacheDir,
+			"--cache-to", "type=local,dest="+cacheDir+",mode=max",
+		)
 	}
 	return args
 }
 
-// computeConfigHash returns a short hash of config-dependent build inputs
-// (user tools, binaries, session tools) for cache invalidation.
-func computeConfigHash(cfg *config.Config) string {
-	var parts []string
-	parts = append(parts, cfg.Tools.User...)
-	for _, b := range cfg.Tools.Binaries {
-		parts = append(parts, b.Name+"="+b.URLPattern)
-	}
-	parts = append(parts, SessionTools...)
-	h := sha256.Sum256([]byte(strings.Join(parts, ",")))
-	return fmt.Sprintf("%x", h[:8])
-}

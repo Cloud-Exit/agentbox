@@ -22,7 +22,8 @@ ENV LANG=C.UTF-8 \
     PATH="/home/${USERNAME}/.local/bin:/usr/local/bin:${PATH}"
 
 # Install base packages
-RUN apk add --no-cache \
+RUN --mount=type=cache,target=/var/cache/apk \
+    apk add --no-cache \
     # Essential tools
     ca-certificates curl wget git openssh-client bash \
     # Editors

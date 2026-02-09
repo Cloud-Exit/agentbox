@@ -25,6 +25,7 @@ import (
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
+	"github.com/cloud-exit/exitbox/internal/ipc"
 	"github.com/cloud-exit/exitbox/internal/network"
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/project"
@@ -41,7 +42,8 @@ type Options struct {
 	NoFirewall        bool
 	ReadOnly          bool
 	NoEnv             bool
-	NoResume          bool
+	Resume            bool
+	ResumeToken       string
 	EnvVars           []string
 	IncludeDirs       []string
 	AllowURLs         []string
@@ -71,20 +73,35 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	}
 
 	// Network setup
-	network.EnsureNetworks(rt)
-	agentNetwork := network.InternalNetwork
 	if opts.NoFirewall {
-		agentNetwork = network.EgressNetwork
-	}
-	args = append(args, "--network", agentNetwork)
-
-	// Firewall / proxy
-	if !opts.NoFirewall {
+		// Host networking gives unrestricted internet access and exposes
+		// all container ports directly (e.g. Codex OAuth on 1455).
+		args = append(args, "--network", "host")
+	} else {
+		network.EnsureNetworks(rt)
+		args = append(args, "--network", network.InternalNetwork)
 		if err := network.StartSquidProxy(rt, containerName, opts.AllowURLs); err != nil {
 			return 1, fmt.Errorf("failed to start firewall (Squid proxy): %w", err)
 		}
 		proxyArgs := network.GetProxyEnvVars(rt)
 		args = append(args, proxyArgs...)
+	}
+
+	// IPC server for runtime domain allow requests.
+	var ipcServer *ipc.Server
+	if !opts.NoFirewall {
+		var ipcErr error
+		ipcServer, ipcErr = ipc.NewServer()
+		if ipcErr != nil {
+			ui.Warnf("Failed to start IPC server: %v", ipcErr)
+		} else {
+			ipcServer.Handle("allow_domain", ipc.NewAllowDomainHandler(ipc.AllowDomainHandlerConfig{
+				Runtime:       rt,
+				ContainerName: containerName,
+			}))
+			ipcServer.Start()
+			defer ipcServer.Stop()
+		}
 	}
 
 	// Ensure squid cleanup runs on ALL return paths (including early errors).
@@ -179,14 +196,23 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		"-e", "EXITBOX_PROJECT_KEY="+projectKey,
 		"-e", "EXITBOX_VERSION="+opts.Version,
 		"-e", "EXITBOX_STATUS_BAR="+fmt.Sprint(opts.StatusBar),
-		"-e", "EXITBOX_AUTO_RESUME="+fmt.Sprint(!opts.NoResume),
+		"-e", "EXITBOX_AUTO_RESUME="+fmt.Sprint(opts.Resume),
 	)
+	if opts.ResumeToken != "" {
+		args = append(args, "-e", "EXITBOX_RESUME_TOKEN="+opts.ResumeToken)
+	}
 
 	// Security options
 	args = append(args,
 		"--security-opt=no-new-privileges:true",
 		"--cap-drop=ALL",
 	)
+
+	// IPC socket mount
+	if ipcServer != nil {
+		args = append(args, "-v", ipcServer.SocketDir()+":/run/exitbox")
+		args = append(args, "-e", "EXITBOX_IPC_SOCKET=/run/exitbox/host.sock")
+	}
 
 	// Image
 	args = append(args, imageName)
@@ -245,6 +271,8 @@ func isReservedEnvVar(key string) bool {
 		"EXITBOX_VERSION":         true,
 		"EXITBOX_STATUS_BAR":      true,
 		"EXITBOX_AUTO_RESUME":     true,
+		"EXITBOX_IPC_SOCKET":      true,
+		"EXITBOX_RESUME_TOKEN":    true,
 		"TERM":                    true,
 		"http_proxy":              true,
 		"https_proxy":             true,

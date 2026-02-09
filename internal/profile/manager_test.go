@@ -136,6 +136,107 @@ func TestResolveActiveWorkspace_Empty(t *testing.T) {
 	}
 }
 
+func TestResolveActiveWorkspace_OverrideCaseInsensitive(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Items: []config.Workspace{
+				{Name: "Personal", Development: []string{"python"}},
+				{Name: "work", Development: []string{"go"}},
+			},
+		},
+	}
+
+	// "personal" should match "Personal"
+	active, err := ResolveActiveWorkspace(cfg, "/some/dir", "personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil {
+		t.Fatal("expected active workspace")
+	}
+	if active.Workspace.Name != "Personal" {
+		t.Fatalf("expected canonical name 'Personal', got %s", active.Workspace.Name)
+	}
+
+	// "WORK" should match "work"
+	active, err = ResolveActiveWorkspace(cfg, "/some/dir", "WORK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil {
+		t.Fatal("expected active workspace")
+	}
+	if active.Workspace.Name != "work" {
+		t.Fatalf("expected canonical name 'work', got %s", active.Workspace.Name)
+	}
+}
+
+func TestResolveActiveWorkspace_DefaultFallbackCaseInsensitive(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Items: []config.Workspace{
+				{Name: "personal"},
+				{Name: "Work"},
+			},
+		},
+		Settings: config.SettingsConfig{
+			DefaultWorkspace: "work", // lowercase, stored name is "Work"
+		},
+	}
+
+	active, err := ResolveActiveWorkspace(cfg, "/some/dir", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil {
+		t.Fatal("expected active workspace")
+	}
+	if active.Workspace.Name != "Work" {
+		t.Fatalf("expected canonical name 'Work', got %s", active.Workspace.Name)
+	}
+}
+
+func TestFindWorkspace(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Items: []config.Workspace{
+				{Name: "MyWorkspace"},
+			},
+		},
+	}
+
+	// Case-insensitive lookup
+	if w := FindWorkspace(cfg, "myworkspace"); w == nil {
+		t.Fatal("expected to find workspace")
+	} else if w.Name != "MyWorkspace" {
+		t.Fatalf("expected canonical name 'MyWorkspace', got %s", w.Name)
+	}
+
+	// Non-existent
+	if w := FindWorkspace(cfg, "nonexistent"); w != nil {
+		t.Fatalf("expected nil, got %+v", w)
+	}
+}
+
+func TestWorkspaceNames(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: config.WorkspaceCatalog{
+			Items: []config.Workspace{
+				{Name: "personal"},
+				{Name: "work"},
+			},
+		},
+	}
+
+	names := WorkspaceNames(cfg)
+	if len(names) != 2 {
+		t.Fatalf("expected 2 names, got %d", len(names))
+	}
+	if names[0] != "personal" || names[1] != "work" {
+		t.Fatalf("unexpected names: %v", names)
+	}
+}
+
 func TestResolveActiveWorkspace_ActiveFallback(t *testing.T) {
 	cfg := &config.Config{
 		Workspaces: config.WorkspaceCatalog{

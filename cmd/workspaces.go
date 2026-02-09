@@ -83,7 +83,7 @@ func newWorkspacesListCmd() *cobra.Command {
 				fmt.Println("  No workspaces configured. Run 'exitbox workspaces add <name>' to create one.")
 			} else {
 				for _, w := range cfg.Workspaces.Items {
-					fmt.Println(formatWorkspaceEntry(w, cfg.Settings.DefaultWorkspace == w.Name))
+					fmt.Println(formatWorkspaceEntry(w, strings.EqualFold(cfg.Settings.DefaultWorkspace, w.Name)))
 				}
 				fmt.Println()
 				fmt.Println("  * = default workspace")
@@ -138,11 +138,12 @@ func newWorkspacesAddCmd() *cobra.Command {
 			cfg := config.LoadOrDefault()
 
 			ui.Info("Starting workspace setup wizard...")
-			w, makeDefault, err := wizard.RunWorkspaceCreation(cfg, args[0])
+			result, err := wizard.RunWorkspaceCreation(cfg, args[0])
 			if err != nil {
 				ui.Errorf("%v", err)
 			}
 
+			w := result.Workspace
 			if dir != "" {
 				absDir, err := filepath.Abs(dir)
 				if err != nil {
@@ -155,18 +156,24 @@ func newWorkspacesAddCmd() *cobra.Command {
 				ui.Errorf("%v", err)
 			}
 
-			if makeDefault {
+			if result.MakeDefault {
 				if err := profile.SetActiveWorkspace(w.Name, cfg); err != nil {
 					ui.Errorf("%v", err)
 				}
 			}
 
-			for _, a := range agent.AgentNames {
-				if !cfg.IsAgentEnabled(a) {
-					continue
-				}
-				if err := profile.EnsureAgentConfig(w.Name, a); err != nil {
-					ui.Warnf("Could not seed %s config for workspace '%s': %v", a, w.Name, err)
+			// Handle credential import/copy.
+			if result.CopyFrom != "" {
+				handleCredentialSetup(w.Name, result.CopyFrom)
+			} else {
+				// Seed from host config if no copy source.
+				for _, a := range agent.AgentNames {
+					if !cfg.IsAgentEnabled(a) {
+						continue
+					}
+					if err := profile.EnsureAgentConfig(w.Name, a); err != nil {
+						ui.Warnf("Could not seed %s config for workspace '%s': %v", a, w.Name, err)
+					}
 				}
 			}
 
@@ -225,19 +232,13 @@ func newWorkspacesDefaultCmd() *cobra.Command {
 			}
 
 			name := args[0]
-			found := false
-			for _, w := range cfg.Workspaces.Items {
-				if w.Name == name {
-					found = true
-					break
-				}
-			}
-			if !found {
-				ui.Errorf("unknown workspace: %s", name)
+			w := profile.FindWorkspace(cfg, name)
+			if w == nil {
+				ui.Errorf("unknown workspace: %s. Available: %s", name, strings.Join(profile.WorkspaceNames(cfg), ", "))
 			}
 
-			cfg.Settings.DefaultWorkspace = name
-			cfg.Workspaces.Active = name
+			cfg.Settings.DefaultWorkspace = w.Name
+			cfg.Workspaces.Active = w.Name
 			if err := config.SaveConfig(cfg); err != nil {
 				ui.Errorf("failed to save config: %v", err)
 			}

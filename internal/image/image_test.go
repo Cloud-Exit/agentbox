@@ -34,8 +34,23 @@ func TestFormatDuration(t *testing.T) {
 
 func TestBuildArgs_Docker(t *testing.T) {
 	args := buildArgs("docker")
-	if len(args) != 1 || args[0] != "--progress=auto" {
-		t.Errorf("buildArgs(docker) = %v, want [--progress=auto]", args)
+	if len(args) < 5 {
+		t.Fatalf("buildArgs(docker) = %v, want at least 5 args (progress + cache-from + src + cache-to + dest)", args)
+	}
+	if args[0] != "--progress=auto" {
+		t.Errorf("buildArgs(docker)[0] = %q, want %q", args[0], "--progress=auto")
+	}
+	if args[1] != "--cache-from" {
+		t.Errorf("buildArgs(docker)[1] = %q, want %q", args[1], "--cache-from")
+	}
+	if !strings.HasPrefix(args[2], "type=local,src=") {
+		t.Errorf("buildArgs(docker)[2] = %q, want prefix %q", args[2], "type=local,src=")
+	}
+	if args[3] != "--cache-to" {
+		t.Errorf("buildArgs(docker)[3] = %q, want %q", args[3], "--cache-to")
+	}
+	if !strings.HasPrefix(args[4], "type=local,dest=") || !strings.HasSuffix(args[4], ",mode=max") {
+		t.Errorf("buildArgs(docker)[4] = %q, want type=local,dest=...,mode=max", args[4])
 	}
 }
 
@@ -43,69 +58,6 @@ func TestBuildArgs_Podman(t *testing.T) {
 	args := buildArgs("podman")
 	if len(args) != 2 || args[0] != "--layers" || args[1] != "--pull=newer" {
 		t.Errorf("buildArgs(podman) = %v, want [--layers --pull=newer]", args)
-	}
-}
-
-func TestComputeConfigHash_Deterministic(t *testing.T) {
-	cfg := &config.Config{
-		Tools: config.ToolsConfig{
-			User: []string{"git", "curl"},
-		},
-	}
-
-	h1 := computeConfigHash(cfg)
-	h2 := computeConfigHash(cfg)
-	if h1 != h2 {
-		t.Errorf("computeConfigHash not deterministic: %q != %q", h1, h2)
-	}
-	if len(h1) != 16 { // 8 bytes hex-encoded
-		t.Errorf("computeConfigHash length = %d, want 16", len(h1))
-	}
-}
-
-func TestComputeConfigHash_DifferentInputs(t *testing.T) {
-	cfg1 := &config.Config{
-		Tools: config.ToolsConfig{User: []string{"git"}},
-	}
-	cfg2 := &config.Config{
-		Tools: config.ToolsConfig{User: []string{"git", "curl"}},
-	}
-
-	h1 := computeConfigHash(cfg1)
-	h2 := computeConfigHash(cfg2)
-	if h1 == h2 {
-		t.Error("computeConfigHash should differ for different inputs")
-	}
-}
-
-func TestComputeConfigHash_WithBinaries(t *testing.T) {
-	cfg1 := &config.Config{
-		Tools: config.ToolsConfig{
-			Binaries: []config.BinaryConfig{
-				{Name: "tool1", URLPattern: "https://example.com/{arch}/tool1"},
-			},
-		},
-	}
-	cfg2 := &config.Config{
-		Tools: config.ToolsConfig{
-			Binaries: []config.BinaryConfig{
-				{Name: "tool2", URLPattern: "https://example.com/{arch}/tool2"},
-			},
-		},
-	}
-
-	h1 := computeConfigHash(cfg1)
-	h2 := computeConfigHash(cfg2)
-	if h1 == h2 {
-		t.Error("computeConfigHash should differ for different binary configs")
-	}
-}
-
-func TestComputeConfigHash_EmptyConfig(t *testing.T) {
-	cfg := &config.Config{}
-	h := computeConfigHash(cfg)
-	if h == "" {
-		t.Error("computeConfigHash should return non-empty hash for empty config")
 	}
 }
 
@@ -182,6 +134,55 @@ func TestFileSHA256_DifferentContent(t *testing.T) {
 	}
 }
 
+func TestToolsHash_Deterministic(t *testing.T) {
+	cfg := &config.Config{
+		Tools: config.ToolsConfig{
+			User: []string{"git", "curl"},
+		},
+	}
+
+	h1 := ToolsHash(cfg)
+	h2 := ToolsHash(cfg)
+	if h1 != h2 {
+		t.Errorf("ToolsHash not deterministic: %q != %q", h1, h2)
+	}
+	if len(h1) != 16 { // 8 bytes hex-encoded
+		t.Errorf("ToolsHash length = %d, want 16", len(h1))
+	}
+}
+
+func TestToolsHash_DifferentInputs(t *testing.T) {
+	cfg1 := &config.Config{
+		Tools: config.ToolsConfig{User: []string{"git"}},
+	}
+	cfg2 := &config.Config{
+		Tools: config.ToolsConfig{User: []string{"git", "curl"}},
+	}
+
+	h1 := ToolsHash(cfg1)
+	h2 := ToolsHash(cfg2)
+	if h1 == h2 {
+		t.Error("ToolsHash should differ for different user tools")
+	}
+}
+
+func TestToolsHash_IncludesBinaries(t *testing.T) {
+	cfg1 := &config.Config{}
+	cfg2 := &config.Config{
+		Tools: config.ToolsConfig{
+			Binaries: []config.BinaryConfig{
+				{Name: "mytool", URLPattern: "https://example.com/{arch}/mytool"},
+			},
+		},
+	}
+
+	h1 := ToolsHash(cfg1)
+	h2 := ToolsHash(cfg2)
+	if h1 == h2 {
+		t.Error("ToolsHash should differ when binaries are added")
+	}
+}
+
 func TestWorkspaceHash_Deterministic(t *testing.T) {
 	cfg := config.DefaultConfig()
 	dir := t.TempDir()
@@ -207,5 +208,37 @@ func TestWorkspaceHash_Format(t *testing.T) {
 			t.Errorf("WorkspaceHash contains non-hex char: %c", c)
 			break
 		}
+	}
+}
+
+func TestWorkspaceHash_ExcludesGlobalTools(t *testing.T) {
+	dir := t.TempDir()
+	cfg1 := config.DefaultConfig()
+	cfg2 := config.DefaultConfig()
+	cfg2.Tools.User = []string{"htop", "curl"}
+	cfg2.Tools.Binaries = []config.BinaryConfig{
+		{Name: "mytool", URLPattern: "https://example.com/{arch}/mytool"},
+	}
+
+	h1 := WorkspaceHash(cfg1, dir, "")
+	h2 := WorkspaceHash(cfg2, dir, "")
+	if h1 != h2 {
+		t.Error("WorkspaceHash should NOT change when only global tools/binaries change (those are in tools layer)")
+	}
+}
+
+func TestWorkspaceHash_IncludesSessionTools(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.DefaultConfig()
+
+	h1 := WorkspaceHash(cfg, dir, "")
+
+	oldTools := SessionTools
+	SessionTools = []string{"extra-pkg"}
+	h2 := WorkspaceHash(cfg, dir, "")
+	SessionTools = oldTools
+
+	if h1 == h2 {
+		t.Error("WorkspaceHash should differ when SessionTools are set")
 	}
 }

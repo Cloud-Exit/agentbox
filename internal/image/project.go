@@ -31,18 +31,20 @@ import (
 	"github.com/cloud-exit/exitbox/internal/ui"
 )
 
-// WorkspaceHash computes a short hash encoding the active workspace and user
-// tools. Each distinct workspace configuration produces a different hash,
-// which becomes part of the image name so that no cache is shared between
-// workspaces.
+// WorkspaceHash computes a short hash encoding the active workspace
+// configuration. Each distinct workspace produces a different hash,
+// which becomes part of the image name. Global tool config (cfg.Tools.User,
+// cfg.Tools.Binaries) is NOT included — those live in the shared tools
+// layer and are tracked via its own hash/label.
 func WorkspaceHash(cfg *config.Config, projectDir string, overrideName string) string {
 	active, _ := profile.ResolveActiveWorkspace(cfg, projectDir, overrideName)
 	var parts []string
 	if active != nil {
 		parts = append(parts, active.Scope, active.Workspace.Name)
 		parts = append(parts, active.Workspace.Development...)
+		parts = append(parts, active.Workspace.Packages...)
 	}
-	parts = append(parts, cfg.Tools.User...)
+	parts = append(parts, SessionTools...)
 	h := sha256.Sum256([]byte(strings.Join(parts, ",")))
 	return fmt.Sprintf("%x", h[:8])
 }
@@ -54,23 +56,23 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	cfg := config.LoadOrDefault()
 	wh := WorkspaceHash(cfg, projectDir, workspaceOverride)
 	imageName := proj.ImageName(agentName, projectDir, wh)
-	coreImage := fmt.Sprintf("exitbox-%s-core", agentName)
+	toolsImage := fmt.Sprintf("exitbox-%s-tools", agentName)
 	cmd := container.Cmd(rt)
 
-	// Ensure core image exists
-	if err := BuildCore(ctx, rt, agentName, false); err != nil {
+	// Ensure tools image exists (tools → core → base cascade)
+	if err := BuildTools(ctx, rt, agentName, false); err != nil {
 		return err
 	}
 
 	// Each workspace has its own image name. If it already exists, skip.
 	if !force && rt.ImageExists(imageName) {
-		// Still check if core is newer (e.g. agent version bump)
-		coreCreated, _ := rt.ImageInspect(coreImage, "{{.Created}}")
+		// Check if tools is newer (e.g. user changed tool categories)
+		toolsCreated, _ := rt.ImageInspect(toolsImage, "{{.Created}}")
 		projectCreated, _ := rt.ImageInspect(imageName, "{{.Created}}")
-		if coreCreated == "" || projectCreated == "" || coreCreated <= projectCreated {
+		if toolsCreated == "" || projectCreated == "" || toolsCreated <= projectCreated {
 			return nil
 		}
-		ui.Info("Core image updated, rebuilding project image...")
+		ui.Info("Tools image updated, rebuilding project image...")
 	}
 
 	// Resolve active workspace.
@@ -91,14 +93,16 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 	dockerfilePath := filepath.Join(buildCtx, "Dockerfile")
 	var df strings.Builder
 
-	fmt.Fprintf(&df, "FROM %s\n\n", coreImage)
+	df.WriteString("# syntax=docker/dockerfile:1\n")
+	fmt.Fprintf(&df, "FROM %s\n\n", toolsImage)
 
-	// Switch to root for package installation (some core images end as non-root)
+	// Switch to root for package installation (tools image stays as root,
+	// but be explicit in case that changes)
 	df.WriteString("USER root\n\n")
 
-	// Install user tools
-	if len(cfg.Tools.User) > 0 {
-		fmt.Fprintf(&df, "RUN apk add --no-cache %s\n\n", strings.Join(cfg.Tools.User, " "))
+	// Install workspace-specific packages
+	if active != nil && len(active.Workspace.Packages) > 0 {
+		fmt.Fprintf(&df, "RUN --mount=type=cache,target=/var/cache/apk apk add --no-cache %s\n\n", strings.Join(active.Workspace.Packages, " "))
 	}
 
 	// Add development profile installations from active workspace.
@@ -111,6 +115,13 @@ func BuildProject(ctx context.Context, rt container.Runtime, agentName, projectD
 			df.WriteString(snippet)
 			df.WriteString("\n")
 		}
+	}
+
+	// Install session tools (from --tools flag) LAST — these are the most
+	// volatile input (per-run), so placing them at the end avoids
+	// invalidating the dev-profile layers above.
+	if len(SessionTools) > 0 {
+		fmt.Fprintf(&df, "RUN --mount=type=cache,target=/var/cache/apk apk add --no-cache %s\n\n", strings.Join(SessionTools, " "))
 	}
 
 	// Fix home dir ownership after root package installs

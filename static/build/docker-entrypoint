@@ -112,7 +112,7 @@ settings:
     no_firewall: false
     read_only: false
     no_env: false
-    auto_resume: true
+    auto_resume: false
 EOF
     fi
 }
@@ -127,6 +127,8 @@ workspace_entries() {
     local result=""
     while IFS= read -r name; do
         [[ -z "$name" ]] && continue
+        # Skip the currently active workspace.
+        [[ "$name" == "${EXITBOX_WORKSPACE_NAME:-}" ]] && continue
         local dir
         dir="$(NAME="$name" yq -r '(.workspaces.items[] | select(.name == strenv(NAME)) | .directory) // ""' "$GLOBAL_CONFIG_FILE" 2>/dev/null || true)"
         if [[ -n "$dir" ]]; then
@@ -284,6 +286,10 @@ switch_workspace_interactive() {
     name="${choice#*:}"
     # Strip directory info display suffix if present
     name="${name%% \[*}"
+    # No-op if already on this workspace.
+    if [[ "$name" == "${EXITBOX_WORKSPACE_NAME:-}" ]]; then
+        exit 0
+    fi
     set_active_workspace "$scope" "$name"
     # Signal the Go host to re-launch with the new workspace.
     mkdir -p "$(dirname "$WORKSPACE_SWITCH_FILE")"
@@ -292,9 +298,7 @@ switch_workspace_interactive() {
 }
 
 capture_resume_token() {
-    if [[ "${EXITBOX_AUTO_RESUME:-true}" != "true" ]]; then
-        return
-    fi
+    # Always capture tokens so they're available for explicit --resume later.
     local output
     output="$(tmux capture-pane -p -S -100 2>/dev/null || true)"
     if [[ -z "$output" ]]; then
@@ -304,7 +308,7 @@ capture_resume_token() {
     case "$AGENT" in
         claude)
             # Match: claude --resume <token>  or  claude -r <token>
-            token="$(echo "$output" | grep -oE "${AGENT} (--resume|-r) [^ ]+" | tail -1 | awk '{print $NF}')"
+            token="$(echo "$output" | grep -oE "${AGENT} (--resume|-r) [^ ]+" | tail -1 | awk '{print $NF}' || true)"
             ;;
         codex)
             # Codex auto-saves sessions to ~/.codex/sessions/; no token printed at exit
@@ -329,6 +333,28 @@ capture_resume_token() {
 
 build_resume_args() {
     RESUME_ARGS=()
+
+    # If an explicit token was passed via --resume <token>, use it directly.
+    if [[ -n "${EXITBOX_RESUME_TOKEN:-}" ]]; then
+        case "$AGENT" in
+            claude)
+                RESUME_ARGS=("--resume" "$EXITBOX_RESUME_TOKEN")
+                ;;
+            codex)
+                RESUME_ARGS=("resume" "--last")
+                ;;
+            opencode)
+                RESUME_ARGS=("--continue")
+                ;;
+        esac
+        return
+    fi
+
+    # Without explicit token, only auto-resume if enabled (--resume flag or workspace switch).
+    if [[ "${EXITBOX_AUTO_RESUME:-false}" != "true" ]]; then
+        return
+    fi
+
     local resume_dir resume_file project_key
     resume_dir="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}/${AGENT}"
     if [[ -n "${EXITBOX_PROJECT_KEY:-}" ]]; then
@@ -336,11 +362,6 @@ build_resume_args() {
         resume_dir="${resume_dir}/projects/${project_key}"
     fi
     resume_file="${resume_dir}/.resume-token"
-    if [[ "${EXITBOX_AUTO_RESUME:-true}" != "true" ]]; then
-        # Clear any existing token when auto-resume is disabled
-        rm -f "$resume_file"
-        return
-    fi
     if [[ -f "$resume_file" ]]; then
         local token
         token="$(cat "$resume_file")"
@@ -441,7 +462,6 @@ run_agent_loop() {
         fi
     fi
     local code=$?
-    set -e
 
     capture_resume_token
 
@@ -480,7 +500,8 @@ fi
 # SANDBOX INSTRUCTIONS
 # ============================================================================
 
-SANDBOX_INSTRUCTIONS="# ExitBox Sandbox Environment
+SANDBOX_INSTRUCTIONS="<!-- BEGIN-EXITBOX-SANDBOX -->
+# ExitBox Sandbox Environment
 
 You are running inside an ExitBox sandboxed container. Important constraints:
 
@@ -491,7 +512,20 @@ You are running inside an ExitBox sandboxed container. Important constraints:
 - Network access is filtered through a firewall proxy. Only allowlisted domains are reachable.
 - You are running as a non-root user with limited capabilities (no-new-privileges, all caps dropped).
 - If you encounter permission errors or network issues, they are likely due to sandbox restrictions.
+- IMPORTANT - Domain access requests: When ANY network request fails due to the firewall
+  (HTTP 403 from proxy, connection refused, SSL errors, timeouts to non-allowlisted hosts),
+  you MUST ask the user whether they want to allow access to that domain.
+  If the user agrees, run \`exitbox-allow <domain>\` to request access.
+  The host user will then be prompted a second time on the host terminal to confirm.
+  Wait for the result before proceeding.
+  If approved, retry the original request. If denied, inform the user and do not retry.
+  Extract the domain from the failing URL and request it.
+  Examples:
+    exitbox-allow registry.npmjs.org
+    exitbox-allow api.github.com
+    exitbox-allow bunny.net
 - Focus on writing, testing, and debugging code within /workspace. That is your scope.
+<!-- END-EXITBOX-SANDBOX -->
 "
 
 inject_sandbox_instructions() {
@@ -516,9 +550,14 @@ inject_sandbox_instructions() {
     fi
 
     if [[ -f "$target" ]]; then
-        if ! grep -q "ExitBox Sandbox" "$target" 2>/dev/null; then
-            printf '\n%s' "$SANDBOX_INSTRUCTIONS" >> "$target"
+        # Remove any existing sandbox block (new marker format or legacy).
+        if grep -q "BEGIN-EXITBOX-SANDBOX" "$target" 2>/dev/null; then
+            sed -i '/<!-- BEGIN-EXITBOX-SANDBOX -->/,/<!-- END-EXITBOX-SANDBOX -->/d' "$target"
+        elif grep -q "# ExitBox Sandbox Environment" "$target" 2>/dev/null; then
+            # Legacy format: remove from header through trailing blank lines.
+            sed -i '/^# ExitBox Sandbox Environment$/,/^[[:space:]]*$/d' "$target"
         fi
+        printf '\n%s' "$SANDBOX_INSTRUCTIONS" >> "$target"
     else
         printf '%s' "$SANDBOX_INSTRUCTIONS" > "$target"
     fi
@@ -559,11 +598,16 @@ if [[ $# -eq 0 && -n "$AGENT" && -z "${TMUX:-}" && -t 0 && -t 1 ]] && command -v
         resume_dir="${resume_dir}/projects/${project_key}"
     fi
     resume_file="${resume_dir}/.resume-token"
-    if [[ -f "$resume_file" ]] && [[ "${EXITBOX_AUTO_RESUME:-true}" == "true" ]]; then
-        echo ""
-        echo "[INFO] Session saved. Next run will auto-resume this conversation."
-        echo "[INFO] To start fresh: exitbox run ${AGENT} --no-resume"
-        echo "[INFO] To disable globally: exitbox setup > uncheck 'Auto-resume sessions'"
+    if [[ -f "$resume_file" ]]; then
+        saved_token="$(cat "$resume_file" 2>/dev/null)"
+        if [[ -n "$saved_token" ]]; then
+            echo ""
+            resume_cmd="exitbox run ${AGENT}"
+            if [[ -n "${EXITBOX_WORKSPACE_NAME:-}" && "${EXITBOX_WORKSPACE_NAME}" != "default" ]]; then
+                resume_cmd="${resume_cmd} --workspace ${EXITBOX_WORKSPACE_NAME}"
+            fi
+            echo "[INFO] Session saved. To resume: ${resume_cmd} --resume ${saved_token}"
+        fi
     fi
 
     exit $TMUX_EXIT

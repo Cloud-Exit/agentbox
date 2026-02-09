@@ -40,6 +40,7 @@ const (
 	stepAgents
 	stepSettings
 	stepDomains
+	stepCopyCredentials
 	stepReview
 	stepDone
 )
@@ -62,6 +63,7 @@ type State struct {
 	ReadOnly            bool
 	OriginalDevelopment []string          // non-nil when editing an existing workspace
 	DomainCategories    []domainCategory  // editable allowlist categories
+	CopyFrom            string            // workspace to copy credentials from (empty = none)
 }
 
 // Model is the root bubbletea model for the wizard.
@@ -117,10 +119,11 @@ var sidebarSteps = []stepInfo{
 	{stepTools, "Tools", 3},
 	{stepPackages, "Packages", 4},
 	{stepProfile, "Workspace", 5},
-	{stepAgents, "Agents", 6},
-	{stepSettings, "Settings", 7},
-	{stepDomains, "Firewall", 8},
-	{stepReview, "Review", 9},
+	{stepCopyCredentials, "Credentials", 6},
+	{stepAgents, "Agents", 7},
+	{stepSettings, "Settings", 8},
+	{stepDomains, "Firewall", 9},
+	{stepReview, "Review", 10},
 }
 
 const sidebarWidth = 22
@@ -132,6 +135,9 @@ func (m Model) visibleSidebarSteps() []stepInfo {
 	num := 1
 	for _, si := range sidebarSteps {
 		if si.Step == stepDomains && !m.firewallEnabled() {
+			continue
+		}
+		if si.Step == stepCopyCredentials && !m.hasCopyCredentialsStep() {
 			continue
 		}
 		out = append(out, stepInfo{Step: si.Step, Label: si.Label, Num: num})
@@ -148,7 +154,7 @@ func NewModel() Model {
 	checked["setting:status_bar"] = true
 	checked["setting:make_default"] = true
 	checked["setting:firewall"] = true
-	checked["setting:auto_resume"] = true
+	checked["setting:auto_resume"] = false
 	checked["setting:pass_env"] = true
 	checked["setting:read_only"] = false
 	return Model{
@@ -251,24 +257,28 @@ func NewModelFromConfig(cfg *config.Config) Model {
 		}
 	}
 
-	// Pre-populate custom packages: packages in Tools.User that aren't
-	// from the selected tool categories.
+	// Pre-populate custom packages from the active workspace.
+	// Fall back to global Tools.User for configs that predate per-workspace packages.
 	pkgSelected := make(map[string]bool)
-	categoryPkgs := make(map[string]bool)
-	for _, p := range ComputePackages(cfg.ToolCategories) {
-		categoryPkgs[p] = true
-	}
-	for _, p := range cfg.Tools.User {
-		if !categoryPkgs[p] {
+	ws := findWorkspace(cfg.Workspaces.Items, activeWorkspaceNameOrDefault(activeWorkspaceName))
+	if ws != nil && len(ws.Packages) > 0 {
+		for _, p := range ws.Packages {
 			pkgSelected[p] = true
+		}
+	} else {
+		categoryPkgs := make(map[string]bool)
+		for _, p := range ComputePackages(cfg.ToolCategories) {
+			categoryPkgs[p] = true
+		}
+		for _, p := range cfg.Tools.User {
+			if !categoryPkgs[p] {
+				pkgSelected[p] = true
+			}
 		}
 	}
 
-	// Pre-mark all steps visited since user has been through wizard before.
+	// Start with no steps visited — checkmarks are earned during this session.
 	visited := make(map[Step]bool)
-	for _, si := range sidebarSteps {
-		visited[si.Step] = true
-	}
 
 	return Model{
 		step:             startStep,
@@ -287,7 +297,7 @@ func NewModelFromConfig(cfg *config.Config) Model {
 
 // NewWorkspaceModelFromConfig creates a blank wizard model for creating one workspace.
 // It intentionally does not inherit role/language/settings selections.
-func NewWorkspaceModelFromConfig(_ *config.Config, workspaceName string) Model {
+func NewWorkspaceModelFromConfig(cfg *config.Config, workspaceName string) Model {
 	m := NewModel()
 	m.workspaceOnly = true
 	m.state.MakeDefault = false
@@ -305,6 +315,15 @@ func NewWorkspaceModelFromConfig(_ *config.Config, workspaceName string) Model {
 		m.state.WorkspaceName = m.workspaceInput
 	} else {
 		m.workspaceInput = ""
+	}
+	// Populate existing workspaces for the copy-credentials step.
+	if cfg != nil {
+		for _, w := range cfg.Workspaces.Items {
+			// Exclude the workspace being created.
+			if !strings.EqualFold(w.Name, workspaceName) {
+				m.workspaces = append(m.workspaces, w)
+			}
+		}
 	}
 	return m
 }
@@ -372,6 +391,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateAgents(msg)
 	case stepSettings:
 		return m.updateSettings(msg)
+	case stepCopyCredentials:
+		return m.updateCopyCredentials(msg)
 	case stepDomains:
 		return m.updateDomains(msg)
 	case stepReview:
@@ -402,6 +423,8 @@ func (m Model) View() string {
 		content = m.viewAgents()
 	case stepSettings:
 		content = m.viewSettings()
+	case stepCopyCredentials:
+		content = m.viewCopyCredentials()
 	case stepDomains:
 		content = m.viewDomains()
 	case stepReview:
@@ -475,6 +498,15 @@ func activeWorkspaceNameOrDefault(name string) string {
 		return "default"
 	}
 	return name
+}
+
+func findWorkspace(items []config.Workspace, name string) *config.Workspace {
+	for i := range items {
+		if strings.EqualFold(items[i].Name, name) {
+			return &items[i]
+		}
+	}
+	return nil
 }
 
 // --- Welcome Step ---
@@ -622,7 +654,7 @@ func (m Model) updateWorkspaceSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.checked["setting:status_bar"] = true
 				m.checked["setting:make_default"] = false
 				m.checked["setting:firewall"] = true
-				m.checked["setting:auto_resume"] = true
+				m.checked["setting:auto_resume"] = false
 				m.checked["setting:pass_env"] = true
 				m.checked["setting:read_only"] = false
 			}
@@ -746,7 +778,7 @@ func (m Model) updateRole(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) viewRole() string {
 	var b strings.Builder
 	if m.workspaceOnly {
-		b.WriteString(titleStyle.Render("Step 1/3 — What kind of developer are you?"))
+		b.WriteString(titleStyle.Render(fmt.Sprintf("Step 1/%d — What kind of developer are you?", m.workspaceOnlyStepCount())))
 	} else {
 		b.WriteString(m.stepTitle(1, "What kind of developer are you?"))
 	}
@@ -815,7 +847,12 @@ func (m Model) updateLanguage(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.visitedSteps[stepLanguage] = true
 			if m.workspaceOnly {
-				m.step = stepReview
+				m = m.collectAllStepState()
+				if len(m.workspaces) > 0 {
+					m.step = stepCopyCredentials
+				} else {
+					m.step = stepReview
+				}
 			} else {
 				m.step = stepTools
 			}
@@ -831,7 +868,7 @@ func (m Model) updateLanguage(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) viewLanguage() string {
 	var b strings.Builder
 	if m.workspaceOnly {
-		b.WriteString(titleStyle.Render("Step 2/3 — Which languages do you use?"))
+		b.WriteString(titleStyle.Render(fmt.Sprintf("Step 2/%d — Which languages do you use?", m.workspaceOnlyStepCount())))
 	} else {
 		b.WriteString(m.stepTitle(2, "Which languages do you use?"))
 	}
@@ -1227,7 +1264,11 @@ func (m Model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state.MakeDefault = false
 			}
 			m.visitedSteps[stepProfile] = true
-			m.step = stepAgents
+			if m.hasCopyCredentialsStep() {
+				m.step = stepCopyCredentials
+			} else {
+				m.step = stepAgents
+			}
 			m.cursor = 0
 		case "esc":
 			if m.workspaceOnly {
@@ -1272,6 +1313,135 @@ func (m Model) viewProfile() string {
 	return b.String()
 }
 
+// --- Copy Credentials Step ---
+// Shown in both the full wizard and workspace-only wizard when there are
+// existing workspaces to copy from. Offers: copy from workspace, import
+// from host, or skip.
+
+// hasCopyCredentialsStep returns true when the copy-credentials step should be shown.
+func (m Model) hasCopyCredentialsStep() bool {
+	// Only for new workspaces (not editing), and only when other workspaces exist.
+	return !m.editingExisting && len(m.copyCredentialOptions()) > 0
+}
+
+// copyCredentialOptions returns workspace names available to copy from.
+// Excludes the workspace being created/edited.
+func (m Model) copyCredentialOptions() []config.Workspace {
+	var out []config.Workspace
+	for _, w := range m.workspaces {
+		if !strings.EqualFold(w.Name, m.state.WorkspaceName) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func (m Model) updateCopyCredentials(msg tea.Msg) (tea.Model, tea.Cmd) {
+	options := m.copyCredentialOptions()
+	// Layout: [Skip] [Import from host] [workspace 0] ... [workspace N-1]
+	itemCount := len(options) + 2
+
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < itemCount-1 {
+				m.cursor++
+			}
+		case "enter":
+			if m.cursor == 0 {
+				m.state.CopyFrom = ""
+			} else if m.cursor == 1 {
+				m.state.CopyFrom = "__host__"
+			} else {
+				m.state.CopyFrom = options[m.cursor-2].Name
+			}
+			if m.workspaceOnly {
+				m = m.collectAllStepState()
+				m.step = stepReview
+			} else {
+				m.visitedSteps[stepCopyCredentials] = true
+				m.step = stepAgents
+			}
+			m.cursor = 0
+		case "esc":
+			if m.workspaceOnly {
+				m.step = stepLanguage
+			} else {
+				m.step = stepProfile
+			}
+			m.cursor = 0
+		}
+	}
+	return m, nil
+}
+
+func (m Model) viewCopyCredentials() string {
+	options := m.copyCredentialOptions()
+	var b strings.Builder
+
+	if m.workspaceOnly {
+		b.WriteString(titleStyle.Render(fmt.Sprintf("Step %d/%d — Import credentials", m.workspaceOnlyStepCount()-1, m.workspaceOnlyStepCount())))
+	} else {
+		b.WriteString(m.stepTitle(6, "Import credentials"))
+	}
+	b.WriteString("\n")
+	b.WriteString(subtitleStyle.Render("Agent credentials (API keys, auth tokens) for the new workspace.\n"))
+	b.WriteString("\n")
+
+	wsName := strings.TrimSpace(m.state.WorkspaceName)
+	if wsName == "" {
+		wsName = strings.TrimSpace(m.workspaceInput)
+	}
+
+	idx := 0
+
+	// "Skip" option (default)
+	cursor := "  "
+	if m.cursor == idx {
+		cursor = cursorStyle.Render("> ")
+	}
+	b.WriteString(fmt.Sprintf("%sSkip  %s\n", cursor, dimStyle.Render(fmt.Sprintf("(can be done later with 'exitbox import --workspace %s')", wsName))))
+	idx++
+
+	// "Import from host" option
+	cursor = "  "
+	if m.cursor == idx {
+		cursor = cursorStyle.Render("> ")
+	}
+	b.WriteString(fmt.Sprintf("%sImport from host  %s\n", cursor, dimStyle.Render("(~/.claude, ~/.codex, etc.)")))
+	idx++
+
+	b.WriteString("\n")
+
+	for _, w := range options {
+		cursor = "  "
+		if m.cursor == idx {
+			cursor = cursorStyle.Render("> ")
+		}
+		label := fmt.Sprintf("Copy from '%s'", w.Name)
+		if len(w.Development) > 0 {
+			label += dimStyle.Render("  (" + strings.Join(w.Development, ", ") + ")")
+		}
+		b.WriteString(fmt.Sprintf("%s%s\n", cursor, label))
+		idx++
+	}
+
+	b.WriteString(helpStyle.Render("\nUp/Down to move, Enter to confirm, Esc to go back"))
+	return b.String()
+}
+
+// workspaceOnlyStepCount returns the total step count for workspace-only mode.
+func (m Model) workspaceOnlyStepCount() int {
+	if m.hasCopyCredentialsStep() {
+		return 4 // Role, Language, Copy Credentials, Review
+	}
+	return 3 // Role, Language, Review
+}
+
 // --- Agents Step (multi-select) ---
 
 func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1310,7 +1480,11 @@ func (m Model) updateAgents(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.step = stepSettings
 			m.cursor = 0
 		case "esc":
-			m.step = stepProfile
+			if m.hasCopyCredentialsStep() {
+				m.step = stepCopyCredentials
+			} else {
+				m.step = stepProfile
+			}
 			m.cursor = 0
 		}
 	}
@@ -1396,6 +1570,7 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.domainCatCursor = 0
 				m.domainItemCursor = 0
 			} else {
+				m = m.collectAllStepState()
 				m.step = stepReview
 			}
 			m.cursor = 0
@@ -1466,7 +1641,11 @@ func (m Model) updateReview(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "esc":
 			if m.workspaceOnly {
-				m.step = stepLanguage
+				if len(m.workspaces) > 0 {
+					m.step = stepCopyCredentials
+				} else {
+					m.step = stepLanguage
+				}
 			} else if m.firewallEnabled() {
 				m.step = stepDomains
 			} else {
@@ -1608,7 +1787,11 @@ func (m Model) viewReview() string {
 
 func (m Model) viewWorkspaceOnlyReview() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Step 3/3 — Review new workspace"))
+	totalSteps := 3
+	if len(m.workspaces) > 0 {
+		totalSteps = 4
+	}
+	b.WriteString(titleStyle.Render(fmt.Sprintf("Step %d/%d — Review new workspace", totalSteps, totalSteps)))
 	b.WriteString("\n\n")
 
 	name := strings.TrimSpace(m.state.WorkspaceName)
@@ -1618,26 +1801,33 @@ func (m Model) viewWorkspaceOnlyReview() string {
 	if name == "" {
 		name = "default"
 	}
-	b.WriteString(fmt.Sprintf("  Workspace:  %s\n", selectedStyle.Render(name)))
+	b.WriteString(fmt.Sprintf("  Workspace:    %s\n", selectedStyle.Render(name)))
 
 	if len(m.state.Roles) > 0 {
-		b.WriteString(fmt.Sprintf("  Roles:      %s\n", successStyle.Render(strings.Join(m.state.Roles, ", "))))
+		b.WriteString(fmt.Sprintf("  Roles:        %s\n", successStyle.Render(strings.Join(m.state.Roles, ", "))))
 	} else {
-		b.WriteString(fmt.Sprintf("  Roles:      %s\n", dimStyle.Render("none")))
+		b.WriteString(fmt.Sprintf("  Roles:        %s\n", dimStyle.Render("none")))
 	}
 
 	if len(m.state.Languages) > 0 {
-		b.WriteString(fmt.Sprintf("  Languages:  %s\n", selectedStyle.Render(strings.Join(m.state.Languages, ", "))))
+		b.WriteString(fmt.Sprintf("  Languages:    %s\n", selectedStyle.Render(strings.Join(m.state.Languages, ", "))))
 	} else {
-		b.WriteString(fmt.Sprintf("  Languages:  %s\n", dimStyle.Render("none")))
+		b.WriteString(fmt.Sprintf("  Languages:    %s\n", dimStyle.Render("none")))
 	}
 
 	dev := ComputeProfiles(m.state.Roles, m.state.Languages)
 	if len(dev) > 0 {
-		b.WriteString(fmt.Sprintf("  Development: %s\n", selectedStyle.Render(strings.Join(dev, ", "))))
+		b.WriteString(fmt.Sprintf("  Development:  %s\n", selectedStyle.Render(strings.Join(dev, ", "))))
 	} else {
-		b.WriteString(fmt.Sprintf("  Development: %s\n", dimStyle.Render("none")))
+		b.WriteString(fmt.Sprintf("  Development:  %s\n", dimStyle.Render("none")))
 	}
+
+	if m.state.CopyFrom != "" {
+		b.WriteString(fmt.Sprintf("  Credentials:  %s\n", selectedStyle.Render("copy from "+m.state.CopyFrom)))
+	} else {
+		b.WriteString(fmt.Sprintf("  Credentials:  %s\n", dimStyle.Render("fresh (seeded from host)")))
+	}
+
 	defaultStr := dimStyle.Render("no")
 	if m.state.MakeDefault {
 		defaultStr = successStyle.Render("yes")
@@ -1753,6 +1943,9 @@ func (m Model) updateSidebar(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.collectCurrentStepState()
 		m.visitedSteps[m.step] = true
+		if target == stepReview {
+			m = m.collectAllStepState()
+		}
 		m.step = target
 		m.cursor = 0
 		m.sidebarFocused = false
@@ -1771,6 +1964,52 @@ func (m Model) updateSidebar(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebarFocused = false
 	}
 	return m, nil
+}
+
+// collectAllStepState snapshots every step's data into m.state from m.checked.
+// Call this before entering Review to ensure the state is complete regardless
+// of which steps were visited or skipped via sidebar navigation.
+func (m Model) collectAllStepState() Model {
+	m.state.Roles = nil
+	for _, role := range Roles {
+		if m.checked["role:"+role.Name] {
+			m.state.Roles = append(m.state.Roles, role.Name)
+		}
+	}
+	m.state.Languages = nil
+	for _, l := range AllLanguages {
+		if m.checked["lang:"+l.Name] {
+			m.state.Languages = append(m.state.Languages, l.Name)
+		}
+	}
+	m.state.ToolCategories = nil
+	for _, t := range AllToolCategories {
+		if m.checked["tool:"+t.Name] {
+			m.state.ToolCategories = append(m.state.ToolCategories, t.Name)
+		}
+	}
+	m.state.CustomPackages = nil
+	for pkg := range m.pkgSelected {
+		if m.pkgSelected[pkg] {
+			m.state.CustomPackages = append(m.state.CustomPackages, pkg)
+		}
+	}
+	m.state.WorkspaceName = strings.TrimSpace(m.workspaceInput)
+	m.state.Agents = nil
+	for _, a := range AllAgents {
+		if m.checked["agent:"+a.Name] {
+			m.state.Agents = append(m.state.Agents, a.Name)
+		}
+	}
+	m.state.AutoUpdate = m.checked["setting:auto_update"]
+	m.state.StatusBar = m.checked["setting:status_bar"]
+	m.state.EnableFirewall = m.checked["setting:firewall"]
+	m.state.AutoResume = m.checked["setting:auto_resume"]
+	m.state.PassEnv = m.checked["setting:pass_env"]
+	m.state.ReadOnly = m.checked["setting:read_only"]
+	m.state.MakeDefault = m.checked["setting:make_default"]
+	m.state.DomainCategories = m.domainCategories
+	return m
 }
 
 // collectCurrentStepState saves current step data from model fields into m.state.
@@ -1883,6 +2122,7 @@ func (m Model) updateDomains(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.state.DomainCategories = m.domainCategories
 		m.visitedSteps[stepDomains] = true
+		m = m.collectAllStepState()
 		m.step = stepReview
 		m.cursor = 0
 	case "esc":

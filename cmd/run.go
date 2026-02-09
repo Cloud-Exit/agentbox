@@ -26,6 +26,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
 	"github.com/cloud-exit/exitbox/internal/image"
+	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/project"
 	"github.com/cloud-exit/exitbox/internal/run"
 	"github.com/cloud-exit/exitbox/internal/ui"
@@ -51,7 +52,8 @@ Flags (passed after the agent name):
   -f, --no-firewall       Disable network firewall
   -r, --read-only         Mount workspace as read-only
   -n, --no-env            Don't pass host environment variables
-      --no-resume         Don't auto-resume the previous agent session
+      --resume [TOKEN]     Resume a session (omit token for last active session)
+      --no-resume         Don't auto-resume (overrides config default)
   -u, --update            Check for and apply agent updates
   -v, --verbose           Enable verbose output
   -w, --workspace NAME    Use a specific workspace for this session
@@ -124,6 +126,18 @@ func runAgent(agentName string, passthrough []string) {
 	image.ForceRebuild = flags.ForceUpdate
 	image.AutoUpdate = cfg.Settings.AutoUpdate || flags.ForceUpdate
 
+	// Validate workspace exists before attempting to run.
+	if flags.Workspace != "" {
+		if profile.FindWorkspace(cfg, flags.Workspace) == nil {
+			available := profile.WorkspaceNames(cfg)
+			if len(available) > 0 {
+				ui.Errorf("Unknown workspace '%s'. Available workspaces: %s", flags.Workspace, strings.Join(available, ", "))
+			} else {
+				ui.Errorf("Unknown workspace '%s'. No workspaces configured. Run 'exitbox setup' first.", flags.Workspace)
+			}
+		}
+	}
+
 	switchFile := filepath.Join(projectDir, ".exitbox", "workspace-switch")
 
 	// Main run loop: re-launches on workspace switch.
@@ -145,7 +159,8 @@ func runAgent(agentName string, passthrough []string) {
 			NoFirewall:        flags.NoFirewall,
 			ReadOnly:          flags.ReadOnly,
 			NoEnv:             flags.NoEnv,
-			NoResume:          flags.NoResume,
+			Resume:            flags.Resume,
+			ResumeToken:       flags.ResumeToken,
 			EnvVars:           flags.EnvVars,
 			IncludeDirs:       flags.IncludeDirs,
 			AllowURLs:         flags.AllowURLs,
@@ -165,9 +180,16 @@ func runAgent(agentName string, passthrough []string) {
 			newWorkspace := strings.TrimSpace(string(data))
 			_ = os.Remove(switchFile)
 			if newWorkspace != "" {
-				ui.Infof("Switching to workspace '%s'...", newWorkspace)
-				flags.Workspace = newWorkspace
-				continue
+				switchCfg := config.LoadOrDefault()
+				if profile.FindWorkspace(switchCfg, newWorkspace) == nil {
+					ui.Warnf("Workspace '%s' not found. Available: %s", newWorkspace, strings.Join(profile.WorkspaceNames(switchCfg), ", "))
+				} else {
+					ui.Infof("Switching to workspace '%s'...", newWorkspace)
+					flags.Workspace = newWorkspace
+					flags.Resume = true      // Auto-resume when switching workspaces
+					flags.ResumeToken = ""   // Use stored token, not an explicit one
+					continue
+				}
 			}
 		}
 
@@ -179,7 +201,8 @@ type parsedFlags struct {
 	NoFirewall  bool
 	ReadOnly    bool
 	NoEnv       bool
-	NoResume    bool
+	Resume      bool
+	ResumeToken string
 	Verbose     bool
 	ForceUpdate bool
 	Workspace   string
@@ -195,7 +218,7 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 		NoFirewall: defaults.NoFirewall,
 		ReadOnly:   defaults.ReadOnly,
 		NoEnv:      defaults.NoEnv,
-		NoResume:   !defaults.AutoResume,
+		Resume:     defaults.AutoResume,
 	}
 
 	for i := 0; i < len(passthrough); i++ {
@@ -207,8 +230,15 @@ func parseRunFlags(passthrough []string, defaults config.DefaultFlags) parsedFla
 			f.ReadOnly = true
 		case "-n", "--no-env":
 			f.NoEnv = true
+		case "--resume":
+			f.Resume = true
+			// Optional token: peek at next arg (if it doesn't start with -)
+			if i+1 < len(passthrough) && !strings.HasPrefix(passthrough[i+1], "-") {
+				i++
+				f.ResumeToken = passthrough[i]
+			}
 		case "--no-resume":
-			f.NoResume = true
+			f.Resume = false
 		case "-v", "--verbose":
 			f.Verbose = true
 		case "-u", "--update":

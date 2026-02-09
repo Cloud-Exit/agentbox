@@ -36,11 +36,15 @@ The setup wizard guides you through:
 1. **Developer role** — Frontend, Backend, Fullstack, DevOps, Data Science, Mobile, Embedded, or Security
 2. **Languages** — Pre-selected based on your role, customize as needed
 3. **Tool categories** — Build tools, databases, networking, DevOps, security, and more
-4. **Workspace name** — Named context for isolated agent configs (e.g. personal, work)
-5. **Agents** — Choose which AI assistants to enable (Claude, Codex, OpenCode)
-6. **Settings** — Auto-update, status bar, default workspace, firewall, auto-resume, env passing, read-only
+4. **Extra packages** — Search and add Alpine packages beyond the tool categories
+5. **Workspace name** — Named context for isolated agent configs (e.g. personal, work)
+6. **Credentials** — Import credentials from host or copy from an existing workspace
+7. **Agents** — Choose which AI assistants to enable (Claude, Codex, OpenCode)
+8. **Settings** — Auto-update, status bar, default workspace, firewall, auto-resume, env passing, read-only
+9. **Firewall** — Edit the domain allowlist categories interactively
+10. **Review** — Confirm your selections before saving
 
-The wizard generates a tailored `config.yaml` with your preferences. You can re-run it at any time with `exitbox setup`.
+The wizard generates a tailored `config.yaml` and `allowlist.yaml` with your preferences. You can re-run it at any time with `exitbox setup`.
 
 ## Features
 
@@ -87,21 +91,24 @@ If the file already exists (e.g., from your own global instructions), ExitBox ap
 
 ### Auto-Resume Sessions
 
-When agents like Claude Code and Codex exit, they display a resume token (e.g. `claude --resume <id>`). ExitBox automatically captures this token and passes it on the next run, so you seamlessly resume where you left off.
+When agents like Claude Code and Codex exit, they display a resume token (e.g. `claude --resume <id>`). ExitBox captures this token and can pass it on the next run, so you seamlessly resume where you left off.
 
-- **Enabled by default** — just run `exitbox claude` again to continue your conversation
+- **Disabled by default** — enable via "Auto-resume sessions" in `exitbox setup` or set `auto_resume: true` in `config.yaml`
+- **Always shown at exit** — ExitBox always prints the full resume command after a session ends (e.g. `exitbox run claude --resume <token>`)
+- **Workspace-aware** — resume commands include `--workspace` when running a non-default workspace
 - **Disable per-session** with `--no-resume` to start a fresh session
-- **Disable globally** by unchecking "Auto-resume sessions" in `exitbox setup`
-- Resume tokens are stored per-workspace per-agent at `~/.config/exitbox/profiles/global/<workspace>/<agent>/.resume-token`
+- Resume tokens are stored per-workspace, per-agent, per-project at `~/.config/exitbox/profiles/global/<workspace>/<agent>/projects/<project_key>/.resume-token`
 
 ### Usability
 - **Cross-Platform**: Native binaries for Linux, macOS, and Windows
 - **Setup Wizard**: Interactive TUI that configures your environment based on your developer role
 - **YAML Config**: Clean, readable configuration with `config.yaml` and `allowlist.yaml`
-- **Config Import**: All platforms use managed config (import-only). Use `exitbox import <agent>` to seed host config.
-- **Simple Commands**: Just run `exitbox claude` to get started
+- **Config Import**: All platforms use managed config (import-only). Use `exitbox import <agent>` to seed host config. Use `exitbox import <agent> --workspace <name>` to import into a specific workspace.
+- **Simple Commands**: Just run `exitbox run claude` to get started
+- **Shell Completion**: Tab-completion for bash, zsh, and fish via `exitbox completion`
 - **CLI Shorthands**: All flags have single-letter aliases (`-f`, `-r`, `-t`, `-a`, etc.)
 - **Session Allow-URLs**: Temporarily allow extra domains with `-a` — no config file edits, no restarts
+- **Runtime Domain Requests**: Agents can request domain access at runtime via `exitbox-allow` inside the container
 
 ## Supported Agents
 
@@ -111,7 +118,7 @@ When agents like Claude Code and Codex exit, they display a resume token (e.g. `
 | `codex`     | OpenAI's Codex CLI           | None (downloaded)|
 | `opencode`  | OpenCode AI assistant        | None (binary download)  |
 
-All agents are installed inside the container. Existing host config (`~/.claude`, etc.) is imported once into managed storage on first run. Use `exitbox import <agent>` (or `exitbox import all`) to re-seed from host config.
+All agents are installed inside the container. Existing host config (`~/.claude`, etc.) is imported once into managed storage on first run. Use `exitbox import <agent>` (or `exitbox import all`) to re-seed from host config. Use `--workspace` to target a specific workspace.
 
 ## Installation
 
@@ -142,7 +149,7 @@ curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/ins
 exitbox setup
 
 # Run an agent
-exitbox claude
+exitbox run claude
 ```
 
 ### macOS
@@ -208,11 +215,11 @@ exitbox setup
 cd /path/to/your/project
 
 # Run an agent (builds image automatically on first run)
-exitbox claude
+exitbox run claude
 
 # Or run other agents
-exitbox codex
-exitbox opencode
+exitbox run codex
+exitbox run opencode
 ```
 
 ExitBox automatically:
@@ -232,9 +239,9 @@ exitbox setup             # Run the interactive setup wizard (recommended first 
 ### Running Agents
 
 ```bash
-exitbox claude [args]     # Run Claude Code
-exitbox codex [args]      # Run Codex
-exitbox opencode [args]   # Run OpenCode
+exitbox run claude [args]     # Run Claude Code
+exitbox run codex [args]      # Run Codex
+exitbox run opencode [args]   # Run OpenCode
 ```
 
 ### Management
@@ -256,22 +263,24 @@ Workspaces are named contexts (e.g. `personal`, `work`, `client-a`) that provide
 
 ```bash
 exitbox workspaces list                    # List all workspaces
-exitbox workspaces create <name>           # Create a new workspace (interactive)
-exitbox workspaces delete <name>           # Delete a workspace
-exitbox workspaces switch <name>           # Set the active workspace
-exitbox workspaces status                  # Show the current active workspace
+exitbox workspaces add <name>              # Create a new workspace (interactive)
+exitbox workspaces remove <name>           # Delete a workspace
+exitbox workspaces use <name>              # Set the active workspace
+exitbox workspaces default [name]          # Get or set the default workspace
+exitbox workspaces status                  # Show workspace resolution chain
 ```
 
 #### How Workspaces Work
 
 - **Isolated credentials**: Each workspace has its own agent config directory at `~/.config/exitbox/profiles/global/<workspace>/<agent>/`. API keys, auth tokens, and conversation history are not shared between workspaces.
-- **Development stacks**: Each workspace can have its own set of development profiles (languages/tools). The setup wizard or `exitbox workspaces create` lets you pick the stack for each workspace.
+- **Development stacks**: Each workspace can have its own set of development profiles (languages/tools). The setup wizard or `exitbox workspaces add` lets you pick the stack for each workspace.
 - **Per-project auto-detection**: Workspaces can be scoped to a directory. When you run an agent from that directory, ExitBox automatically uses the matching workspace.
-- **Default workspace**: Set via `exitbox setup` or `exitbox workspaces switch`. Used when no directory-scoped workspace matches.
+- **Default workspace**: Set via `exitbox setup` or `exitbox workspaces default`. Used when no directory-scoped workspace matches.
+- **Credential import**: When creating a workspace, you can import credentials from the host or copy them from an existing workspace. You can also import later with `exitbox import <agent> --workspace <name>`.
 
 #### Workspace Resolution Order
 
-1. **CLI flag**: `exitbox -w work claude` — explicit override for this session
+1. **CLI flag**: `exitbox run -w work claude` — explicit override for this session
 2. **Directory-scoped**: If the current directory matches a workspace's `directory` field in `config.yaml`
 3. **Default workspace**: The workspace set as default in settings
 4. **Active workspace**: The last-used workspace from `config.yaml`
@@ -287,18 +296,18 @@ While inside a running agent session, press **Ctrl+Alt+P** to open an interactiv
 
 ```bash
 # Create workspaces for different contexts
-exitbox workspaces create work
-exitbox workspaces create personal
+exitbox workspaces add work
+exitbox workspaces add personal
 
 # Run claude in a specific workspace
-exitbox -w work claude
-exitbox -w personal claude
+exitbox run -w work claude
+exitbox run -w personal claude
 
 # Set the default workspace
-exitbox workspaces switch work
+exitbox workspaces default work
 
-# Now "exitbox claude" uses the "work" workspace by default
-exitbox claude
+# Now "exitbox run claude" uses the "work" workspace by default
+exitbox run claude
 ```
 
 #### Shell Aliases
@@ -312,9 +321,9 @@ exitbox aliases
 Or add custom aliases to your `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-alias claude-work="exitbox -w work claude"
-alias claude-personal="exitbox -w personal claude"
-alias codex-work="exitbox -w work codex"
+alias claude-work="exitbox run -w work claude"
+alias claude-personal="exitbox run -w personal claude"
+alias codex-work="exitbox run -w work codex"
 ```
 
 ### Utilities
@@ -327,20 +336,46 @@ exitbox clean all         # Remove all exitbox images
 exitbox projects          # List known projects
 ```
 
+### Shell Completion
+
+ExitBox provides tab-completion for bash, zsh, and fish:
+
+```bash
+# Zsh (add to ~/.zshrc)
+eval "$(exitbox completion zsh)"
+
+# Bash (add to ~/.bashrc)
+eval "$(exitbox completion bash)"
+
+# Fish
+exitbox completion fish > ~/.config/fish/completions/exitbox.fish
+```
+
+For faster shell startup, generate a file instead of using `eval`:
+
+```bash
+# Zsh
+exitbox completion zsh > ~/.zfunc/_exitbox
+# then add to ~/.zshrc (before compinit): fpath=(~/.zfunc $fpath)
+
+# Bash
+exitbox completion bash > ~/.local/share/bash-completion/completions/exitbox
+```
+
 ### Options
 
 ```bash
-exitbox -f claude              # Disable network firewall *DANGEROUS*
-exitbox -r claude              # Mount workspace as read-only (safety)
-exitbox -v claude              # Enable verbose output
-exitbox -n claude              # Don't pass host environment variables
-exitbox -n -e MY_KEY=val claude  # Only pass specific env vars
-exitbox -i /tmp/foo claude     # Mount /tmp/foo into /workspace/foo
-exitbox -t nodejs,go claude    # Add Alpine packages to image (persisted)
-exitbox -a api.example.com claude  # Allow extra domains for this session
-exitbox -u claude              # Check for and apply agent updates
-exitbox --no-resume claude     # Start a fresh session (don't resume previous)
-exitbox -w work claude         # Use a specific workspace for this session
+exitbox run -f claude              # Disable network firewall *DANGEROUS*
+exitbox run -r claude              # Mount workspace as read-only (safety)
+exitbox run -v claude              # Enable verbose output
+exitbox run -n claude              # Don't pass host environment variables
+exitbox run -n -e MY_KEY=val claude  # Only pass specific env vars
+exitbox run -i /tmp/foo claude     # Mount /tmp/foo into /workspace/foo
+exitbox run -t nodejs,go claude    # Add Alpine packages to image (persisted)
+exitbox run -a api.example.com claude  # Allow extra domains for this session
+exitbox run -u claude              # Check for and apply agent updates
+exitbox run --no-resume claude     # Start a fresh session (don't resume previous)
+exitbox run -w work claude         # Use a specific workspace for this session
 ```
 
 All flags have long forms: `-f`/`--no-firewall`, `-r`/`--read-only`, `-v`/`--verbose`, `-n`/`--no-env`, `--no-resume`, `-i`/`--include-dir`, `-t`/`--tools`, `-a`/`--allow-urls`, `-u`/`--update`, `-w`/`--workspace`.
@@ -381,7 +416,7 @@ The recommended way to configure ExitBox is through the setup wizard:
 exitbox setup
 ```
 
-The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It walks you through 7 steps: role, languages, tools, workspace name, agents, settings (auto-update, status bar, default workspace, firewall, auto-resume, env passing, read-only), and a final review. Re-run it at any time to reconfigure.
+The wizard generates `config.yaml` and `allowlist.yaml` tailored to your developer role. It walks you through up to 10 steps: roles, languages, tools, packages, workspace name, credentials, agents, settings, firewall (domain allowlist), and review. Some steps are shown conditionally (e.g., credentials only when other workspaces exist). Re-run it at any time to reconfigure.
 
 ### config.yaml
 
@@ -426,12 +461,12 @@ settings:
     no_firewall: false        # Set true to disable firewall by default
     read_only: false          # Set true to mount workspace as read-only by default
     no_env: false             # Set true to not pass host env vars by default
-    auto_resume: true         # Set false to disable auto-resume by default
+    auto_resume: false        # Set true to auto-resume agent sessions
 ```
 
 **Settings reference:**
 - `status_bar` — Thin status bar at the top of the terminal showing agent, workspace, and version. Enabled by default.
-- `auto_resume` — Automatically resume the last agent conversation on next run. Enabled by default. Disable per-session with `--no-resume`.
+- `auto_resume` — Automatically resume the last agent conversation on next run. Disabled by default. Enable in `exitbox setup` or set to `true`. Disable per-session with `--no-resume`.
 
 ### allowlist.yaml
 
@@ -466,7 +501,7 @@ Add extra Alpine packages to your container images:
 
 1. **CLI flag** (persisted automatically):
    ```bash
-   exitbox -t nodejs,python3-dev claude
+   exitbox run -t nodejs,python3-dev claude
    ```
 
 2. **config.yaml**:
@@ -487,20 +522,22 @@ ExitBox enforces default resource limits to prevent runaway agents:
 
 ### What Gets Mounted
 
-ExitBox uses **managed config** (import-only). On first run, host config is copied into `~/.config/exitbox/<agent>/` and all mounts come from there. Host originals are never modified. Use `exitbox import <agent>` to re-seed from host config at any time.
+ExitBox uses **managed config** (import-only) with per-workspace isolation. On first run, host config is copied into the active workspace's managed directory. Host originals are never modified. Use `exitbox import <agent>` to re-seed from host config at any time, optionally with `--workspace <name>` to target a specific workspace.
 
-| Agent    | Managed Path                                      | Container Path                    |
-|:---------|:--------------------------------------------------|:----------------------------------|
-| Claude   | `~/.config/exitbox/claude/.claude`               | `/home/user/.claude`              |
-| Claude   | `~/.config/exitbox/claude/.claude.json`          | `/home/user/.claude.json`         |
-| Claude   | `~/.config/exitbox/claude/.config`               | `/home/user/.config`              |
-| Codex    | `~/.config/exitbox/codex/.codex`                 | `/home/user/.codex`               |
-| Codex    | `~/.config/exitbox/codex/.config/codex`          | `/home/user/.config/codex`        |
-| OpenCode | `~/.config/exitbox/opencode/.opencode`           | `/home/user/.opencode`            |
-| OpenCode | `~/.config/exitbox/opencode/.config/opencode`    | `/home/user/.config/opencode`     |
-| OpenCode | `~/.config/exitbox/opencode/.local/share/opencode` | `/home/user/.local/share/opencode` |
-| OpenCode | `~/.config/exitbox/opencode/.local/state`        | `/home/user/.local/state`         |
-| OpenCode | `~/.config/exitbox/opencode/.cache/opencode`     | `/home/user/.cache/opencode`      |
+All managed paths follow the pattern `~/.config/exitbox/profiles/global/<workspace>/<agent>/`. For example, with workspace `default` and agent `claude`:
+
+| Agent    | Managed Path (under workspace agent dir)    | Container Path                    |
+|:---------|:--------------------------------------------|:----------------------------------|
+| Claude   | `.claude/`                                   | `/home/user/.claude`              |
+| Claude   | `.claude.json`                               | `/home/user/.claude.json`         |
+| Claude   | `.config/`                                   | `/home/user/.config`              |
+| Codex    | `.codex/`                                    | `/home/user/.codex`               |
+| Codex    | `.config/codex/`                             | `/home/user/.config/codex`        |
+| OpenCode | `.opencode/`                                 | `/home/user/.opencode`            |
+| OpenCode | `.config/opencode/`                          | `/home/user/.config/opencode`     |
+| OpenCode | `.local/share/opencode/`                     | `/home/user/.local/share/opencode` |
+| OpenCode | `.local/state/`                              | `/home/user/.local/state`         |
+| OpenCode | `.cache/opencode/`                           | `/home/user/.cache/opencode`      |
 
 Your project directory is mounted at `/workspace`.
 
@@ -574,15 +611,29 @@ Domain formats:
 Allow extra domains for a single session without editing the allowlist:
 
 ```bash
-exitbox -a api.example.com,cdn.example.com claude
+exitbox run -a api.example.com,cdn.example.com claude
 ```
 
 The domains are merged into the Squid config and applied via **hot-reload** (`squid -k reconfigure`) — no proxy restart, no container restart, no connection drop. These domains do not persist across sessions.
 
+### Runtime Domain Requests
+
+When an agent needs access to a domain not in the allowlist, it (or the user) can request it at runtime from inside the container:
+
+```bash
+exitbox-allow registry.npmjs.org
+```
+
+This connects to the host via a Unix socket IPC channel. The host user is prompted on their terminal to approve or deny the request. Approved domains are added to the Squid config and hot-reloaded immediately — no container restart needed.
+
+- Requires firewall mode (not available with `--no-firewall`)
+- The host prompt appears on `/dev/tty`, so it works even while the agent is running
+- Agents are informed about `exitbox-allow` via the sandbox instructions injected at container start
+
 ### Disabling the Firewall
 
 ```bash
-exitbox --no-firewall claude   # *DANGEROUS* - disables all network restrictions
+exitbox run --no-firewall claude   # *DANGEROUS* - disables all network restrictions
 ```
 
 ## Why Podman?

@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 )
@@ -98,12 +99,15 @@ func ListWorkspaces(cfg *config.Config) []ResolvedWorkspace {
 }
 
 // SetActiveWorkspace sets the active workspace in the global config.
+// This only changes the current session's active workspace, NOT the
+// default workspace. The default is only changed via the setup wizard
+// or explicit CLI commands (e.g. `exitbox workspaces default <name>`).
 func SetActiveWorkspace(name string, cfg *config.Config) error {
-	if findByName(cfg.Workspaces.Items, name) == nil {
+	w := findByName(cfg.Workspaces.Items, name)
+	if w == nil {
 		return fmt.Errorf("unknown workspace: %s", name)
 	}
-	cfg.Workspaces.Active = name
-	cfg.Settings.DefaultWorkspace = name
+	cfg.Workspaces.Active = w.Name
 	return config.SaveConfig(cfg)
 }
 
@@ -126,10 +130,10 @@ func AddWorkspace(w config.Workspace, cfg *config.Config) error {
 // RemoveWorkspace removes a workspace from the global config.
 func RemoveWorkspace(name string, cfg *config.Config) error {
 	cfg.Workspaces.Items = deleteByName(cfg.Workspaces.Items, name)
-	if cfg.Workspaces.Active == name {
+	if strings.EqualFold(cfg.Workspaces.Active, name) {
 		cfg.Workspaces.Active = ""
 	}
-	if cfg.Settings.DefaultWorkspace == name {
+	if strings.EqualFold(cfg.Settings.DefaultWorkspace, name) {
 		cfg.Settings.DefaultWorkspace = ""
 	}
 	return config.SaveConfig(cfg)
@@ -184,9 +188,30 @@ func EnsureAgentConfig(workspaceName, agent string) error {
 	return nil
 }
 
+// CopyWorkspaceCredentials copies all agent credentials from one workspace to another.
+// Only copies agents whose source directory exists and is non-empty.
+func CopyWorkspaceCredentials(srcWorkspace, dstWorkspace string, agents []string) error {
+	for _, agentName := range agents {
+		srcDir := WorkspaceAgentDir(srcWorkspace, agentName)
+		if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+			continue
+		}
+		entries, err := os.ReadDir(srcDir)
+		if err != nil || len(entries) == 0 {
+			continue
+		}
+		dstDir := WorkspaceAgentDir(dstWorkspace, agentName)
+		_ = os.MkdirAll(dstDir, 0755)
+		if err := copyDirRecursive(srcDir, dstDir); err != nil {
+			return fmt.Errorf("copying %s credentials from '%s' to '%s': %w", agentName, srcWorkspace, dstWorkspace, err)
+		}
+	}
+	return nil
+}
+
 func findByName(list []config.Workspace, name string) *config.Workspace {
 	for i := range list {
-		if list[i].Name == name {
+		if strings.EqualFold(list[i].Name, name) {
 			return &list[i]
 		}
 	}
@@ -195,7 +220,7 @@ func findByName(list []config.Workspace, name string) *config.Workspace {
 
 func upsertWorkspace(list []config.Workspace, w config.Workspace) []config.Workspace {
 	for i := range list {
-		if list[i].Name == w.Name {
+		if strings.EqualFold(list[i].Name, w.Name) {
 			list[i] = w
 			return list
 		}
@@ -206,7 +231,7 @@ func upsertWorkspace(list []config.Workspace, w config.Workspace) []config.Works
 func deleteByName(list []config.Workspace, name string) []config.Workspace {
 	var out []config.Workspace
 	for _, w := range list {
-		if w.Name != name {
+		if !strings.EqualFold(w.Name, name) {
 			out = append(out, w)
 		}
 	}
@@ -253,6 +278,17 @@ func copyDirRecursive(src, dst string) error {
 		if d.IsDir() {
 			return os.MkdirAll(target, 0755)
 		}
+
+		// Handle symlinks: recreate them instead of following.
+		if d.Type()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return nil // skip unreadable symlinks
+			}
+			_ = os.Remove(target)
+			return os.Symlink(link, target)
+		}
+
 		return copyFile(path, target)
 	})
 }
@@ -284,6 +320,20 @@ func seedFileOnce(host, managed string) {
 	if err == nil {
 		_ = os.WriteFile(managed, data, 0644)
 	}
+}
+
+// FindWorkspace returns a workspace by name (case-insensitive), or nil.
+func FindWorkspace(cfg *config.Config, name string) *config.Workspace {
+	return findByName(cfg.Workspaces.Items, name)
+}
+
+// WorkspaceNames returns the names of all configured workspaces.
+func WorkspaceNames(cfg *config.Config) []string {
+	names := make([]string, len(cfg.Workspaces.Items))
+	for i, w := range cfg.Workspaces.Items {
+		names[i] = w.Name
+	}
+	return names
 }
 
 // InvalidWorkspaceError is returned when an invalid development profile is used.

@@ -28,6 +28,12 @@ var DockerEntrypoint []byte
 //go:embed build/dockerignore
 var Dockerignore []byte
 
+//go:embed build/exitbox-allow-amd64
+var ExitboxAllowAmd64 []byte
+
+//go:embed build/exitbox-allow-arm64
+var ExitboxAllowArm64 []byte
+
 //go:embed config/allowlist.txt
 var DefaultAllowlistTxt []byte
 

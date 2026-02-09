@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/cloud-exit/exitbox/internal/agent"
 	"github.com/cloud-exit/exitbox/internal/config"
+	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/ui"
 	"github.com/cloud-exit/exitbox/internal/wizard"
 	"github.com/spf13/cobra"
@@ -53,7 +55,8 @@ func runSetup() error {
 		existingCfg = config.LoadOrDefault()
 	}
 
-	if err := wizard.Run(existingCfg); err != nil {
+	result, err := wizard.Run(existingCfg)
+	if err != nil {
 		if err.Error() == "setup cancelled" {
 			if existingCfg != nil {
 				ui.Info("Setup cancelled. Existing configuration unchanged.")
@@ -69,13 +72,63 @@ func runSetup() error {
 		return err
 	}
 
+	// Handle credential import/copy from wizard selection.
+	if result.CopyFrom != "" && result.WorkspaceName != "" {
+		handleCredentialSetup(result.WorkspaceName, result.CopyFrom)
+	}
+
 	ui.Success("ExitBox configured!")
 	fmt.Println()
 	fmt.Println("Next steps:")
 	fmt.Println("  1. Navigate to your project:  cd /path/to/project")
-	fmt.Println("  2. Run an agent:              exitbox run claude")
+
+	// Build the run command reflecting the wizard choices.
+	agentName := "claude"
+	if len(result.Agents) > 0 {
+		agentName = result.Agents[0]
+	}
+	runCmd := fmt.Sprintf("exitbox run %s", agentName)
+	if !result.IsDefault && result.WorkspaceName != "" {
+		runCmd += fmt.Sprintf(" --workspace %s", result.WorkspaceName)
+	}
+	fmt.Printf("  2. Run an agent:              %s\n", runCmd)
 	fmt.Println()
 	return nil
+}
+
+// handleCredentialSetup imports or copies credentials into a workspace.
+// copyFrom is either a workspace name, "__host__" (import from host), or "" (skip).
+func handleCredentialSetup(workspaceName, copyFrom string) {
+	if copyFrom == "__host__" {
+		// Import from host config.
+		for _, name := range agent.AgentNames {
+			a := agent.Get(name)
+			if a == nil {
+				continue
+			}
+			src, err := a.DetectHostConfig()
+			if err != nil {
+				continue
+			}
+			dst := profile.WorkspaceAgentDir(workspaceName, name)
+			if err := os.MkdirAll(dst, 0755); err != nil {
+				ui.Warnf("Failed to create workspace dir for %s: %v", name, err)
+				continue
+			}
+			if err := a.ImportConfig(src, dst); err != nil {
+				ui.Warnf("Failed to import %s config: %v", name, err)
+				continue
+			}
+			ui.Successf("Imported %s credentials from host", name)
+		}
+	} else {
+		// Copy from another workspace.
+		if err := profile.CopyWorkspaceCredentials(copyFrom, workspaceName, agent.AgentNames); err != nil {
+			ui.Warnf("Failed to copy credentials from '%s': %v", copyFrom, err)
+		} else {
+			ui.Successf("Copied credentials from workspace '%s'", copyFrom)
+		}
+	}
 }
 
 func init() {
