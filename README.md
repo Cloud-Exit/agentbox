@@ -22,17 +22,29 @@ Run AI coding assistants (Claude, Codex, OpenCode) in isolated containers with d
 
 ## Getting Started
 
-Install ExitBox and run the interactive setup wizard to configure your environment:
-
 ```bash
 # Install (Linux/macOS)
 curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/install.sh | sh
 
-# Run the setup wizard
+# Run the setup wizard (first time)
 exitbox setup
+
+# Navigate to your project
+cd /path/to/your/project
+
+# Run an agent (builds image automatically on first run)
+exitbox run claude
+
+# Or run other agents
+exitbox run codex
+exitbox run opencode
 ```
 
-The wizard generates a tailored `config.yaml` and `allowlist.yaml` based on your developer role, languages, tools, and preferences. Re-run it at any time with `exitbox setup`.
+ExitBox automatically:
+- Builds the container image if needed
+- Imports your existing config (`~/.claude`, `~/.codex`, etc.) on first run
+- Mounts your project directory
+- Sets up the network firewall (Squid proxy)
 
 ## Features
 
@@ -60,16 +72,11 @@ The project's security posture is rated **High / Robust**, employing a "Defense 
 3.  **Proxy Access Control**: The Squid proxy actively inspects destinations, enforcing a strict allow/deny policy (returning `403 Forbidden` for blocked domains).
 4.  **Capability Restrictions**: `CAP_NET_RAW` and other capabilities are dropped, preventing raw socket creation and network enumeration attacks (e.g., `ping` is disabled).
 
-**Core Features:**
-- **Rootless Containers**: Runs without host root privileges using Podman's user namespaces
-- **Alpine Base Image**: Minimal Alpine Linux base (~5 MB) with a managed tool list
-- **Supply-Chain Hardened Installs**: Claude Code is installed via direct binary download with SHA-256 checksum verification against Anthropic's signed manifest — no `curl | bash`
-- **Squid Proxy Firewall**: Proxy-based destination filtering with explicit allowlist rules
-- **Hard Egress Isolation**: Agent containers run on an internal-only network and can exit only via Squid
+Additional hardening:
 - **No Privilege Escalation**: `--security-opt=no-new-privileges:true` enforced
 - **Capability Dropping**: `--cap-drop=ALL` removes all Linux capabilities
 - **Resource Limits**: Default 8GB RAM / 4 CPUs to prevent DoS
-- **Secure Defaults**: No automatic mounting of sensitive SSH keys or AWS credentials
+- **Secure Defaults**: SSH keys (`~/.ssh`) and AWS credentials (`~/.aws`) are NOT mounted by default
 
 ### Sandbox-Aware Agents
 
@@ -84,13 +91,6 @@ Instructions are written to each agent's native global instructions file:
 | OpenCode | `~/.config/opencode/AGENTS.md`           |
 
 If the file already exists (e.g., from your own global instructions), ExitBox appends the sandbox notice once. The instructions inform the agent about network restrictions, dropped capabilities, and the read-only nature of the environment so it can focus on writing and debugging code within `/workspace`.
-
-### Containers
-- **Podman-First**: Optimized for Podman (rootless, daemonless) with Docker fallback
-- **Multi-Agent Support**: Run Claude Code, OpenAI Codex, or OpenCode
-- **Project Isolation**: Each project gets its own containerized environment
-- **Development Profiles**: Pre-configured environments for Rust, Python, Go, Node.js, and more
-- **Custom Tools**: Add Alpine packages to any image via `-t` flag or `config.yaml`
 
 ### Named Resumable Sessions
 
@@ -113,40 +113,7 @@ ExitBox includes a built-in encrypted secret vault so agents can access API keys
 - **`.env` masking**: When vault is enabled, all `.env*` files are automatically hidden inside the container
 - **Embedded storage**: Secrets are stored in an encrypted [Badger](https://github.com/dgraph-io/badger) database per workspace
 
-**Host-side CLI:**
-
-```bash
-exitbox vault init -w <workspace>       # Initialize a new vault (prompts for password)
-exitbox vault set <KEY> -w <workspace>  # Set a secret (value prompted securely)
-exitbox vault get <KEY> -w <workspace>  # Retrieve a secret
-exitbox vault list -w <workspace>       # List secret keys
-exitbox vault delete <KEY>              # Delete a secret
-exitbox vault import .env               # Import from a .env file
-exitbox vault edit                      # Edit secrets in $EDITOR
-exitbox vault status                    # Show vault state
-exitbox vault destroy                   # Permanently delete the vault
-```
-
-**Inside the container**, agents access secrets via IPC:
-
-```bash
-exitbox-vault list                      # List available keys
-exitbox-vault get <KEY>                 # Get a secret (host user approves via popup)
-TOKEN=$(exitbox-vault get API_KEY)      # Capture into a variable
-```
-
-The first access in a session prompts for the vault password. Subsequent reads only require the per-key approval popup. Agents are instructed via sandbox instructions to never print, log, or commit secret values.
-
-### Usability
-- **Cross-Platform**: Native binaries for Linux, macOS, and Windows
-- **Setup Wizard**: Interactive TUI that configures your environment based on your developer role
-- **YAML Config**: Clean, readable configuration with `config.yaml` and `allowlist.yaml`
-- **Config Import**: All platforms use managed config (import-only). Use `exitbox import <agent>` to seed host config. Use `exitbox import <agent> --workspace <name>` to import into a specific workspace.
-- **Simple Commands**: Just run `exitbox run claude` to get started
-- **Shell Completion**: Tab-completion for bash, zsh, and fish via `exitbox completion`
-- **CLI Shorthands**: All flags have single-letter aliases (`-f`, `-r`, `-t`, `-a`, etc.)
-- **Session Allow-URLs**: Temporarily allow extra domains with `-a` — no config file edits, no restarts
-- **Runtime Domain Requests**: Agents can request domain access at runtime via `exitbox-allow` inside the container
+The first access in a session prompts for the vault password. Subsequent reads only require the per-key approval popup. Inside the container, agents use `exitbox-vault get <KEY>` to retrieve secrets via IPC. See [Vault Management](#vault-management) for the full CLI reference.
 
 ## Supported Agents
 
@@ -164,14 +131,6 @@ All agents are installed inside the container. Existing host config (`~/.claude`
 
 - **Podman** (recommended) or **Docker** — at least one is required; Podman is preferred for its rootless, daemonless design
 - For Windows: **Docker Desktop** provides the Docker CLI that ExitBox uses
-
-### Quick Install (Linux / macOS)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/cloud-exit/exitbox/main/scripts/install.sh | sh
-```
-
-This downloads the latest release binary, verifies its SHA-256 checksum, and installs to `~/.local/bin/`.
 
 ### Linux
 
@@ -243,29 +202,6 @@ make build       # builds ./exitbox
 make install     # installs to ~/.local/bin/exitbox
 ```
 
-## Quick Start
-
-```bash
-# Run the setup wizard (first time)
-exitbox setup
-
-# Navigate to your project
-cd /path/to/your/project
-
-# Run an agent (builds image automatically on first run)
-exitbox run claude
-
-# Or run other agents
-exitbox run codex
-exitbox run opencode
-```
-
-ExitBox automatically:
-- Builds the container image if needed
-- Imports your existing config (`~/.claude`, `~/.codex`, etc.) on first run
-- Mounts your project directory
-- Sets up the network firewall (Squid proxy)
-
 ## Commands
 
 ### Setup
@@ -292,7 +228,6 @@ exitbox rebuild <agent>   # Force rebuild of agent image
 exitbox rebuild all       # Rebuild all enabled agents
 exitbox uninstall <agent> # Remove agent images and config
 exitbox aliases           # Print shell aliases for ~/.bashrc
-exitbox info              # Show system information
 ```
 
 ### Workspace Management
@@ -618,8 +553,6 @@ Your project directory is mounted at `/workspace`.
 
 When Codex is enabled, ExitBox publishes callback port `1455` on the shared `exitbox-squid` container and relays it to the active Codex container, so OrbStack/private-networking callback flows work reliably.
 
-**Note:** SSH keys (`~/.ssh`) and AWS credentials (`~/.aws`) are **NOT** mounted by default for security.
-
 ### Environment Variables
 
 | Variable              | Description                          |
@@ -751,13 +684,6 @@ Ensure Docker Desktop is running and the `docker` CLI is on your `PATH`. You can
 docker info
 ```
 
-### Re-running the Setup Wizard
-
-If your needs change or you want to reconfigure:
-
-```bash
-exitbox setup
-```
 
 ## Uninstallation
 
