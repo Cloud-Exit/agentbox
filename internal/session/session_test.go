@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/cloud-exit/exitbox/internal/config"
+	"github.com/cloud-exit/exitbox/internal/kvstore"
 	"github.com/cloud-exit/exitbox/internal/project"
 )
 
@@ -18,6 +19,20 @@ func withTempConfigHome(t *testing.T) {
 	t.Cleanup(func() {
 		config.Home = oldHome
 	})
+}
+
+func openTestStore(t *testing.T) *kvstore.Store {
+	t.Helper()
+	s, err := kvstore.Open(kvstore.Options{InMemory: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return s
 }
 
 func writeSessionDir(t *testing.T, workspace, agent, projectDir, dirName, sessionName string) string {
@@ -180,5 +195,174 @@ func TestResolveSelector_AmbiguousIDPrefix(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("expected ok=false for ambiguous selector")
+	}
+}
+
+// KV-backed function tests
+
+func TestSaveAndLoadResumeToken(t *testing.T) {
+	store := openTestStore(t)
+
+	err := SaveResumeToken(store, "claude", "proj1", "sess1", "token123")
+	if err != nil {
+		t.Fatalf("SaveResumeToken: %v", err)
+	}
+
+	token, err := LoadResumeToken(store, "claude", "proj1", "sess1", "default", "/tmp/proj")
+	if err != nil {
+		t.Fatalf("LoadResumeToken: %v", err)
+	}
+	if token != "token123" {
+		t.Errorf("token = %q, want %q", token, "token123")
+	}
+}
+
+func TestLoadResumeToken_FallbackToFile(t *testing.T) {
+	withTempConfigHome(t)
+	store := openTestStore(t)
+	projectDir := t.TempDir()
+
+	// Write token to filesystem only.
+	d := writeSessionDir(t, "default", "claude", projectDir, "sess1", "my-session")
+	if err := os.WriteFile(filepath.Join(d, ".resume-token"), []byte("file-token\n"), 0644); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	projectKey := project.GenerateFolderName(projectDir)
+	token, err := LoadResumeToken(store, "claude", projectKey, "sess1", "default", projectDir)
+	if err != nil {
+		t.Fatalf("LoadResumeToken: %v", err)
+	}
+	if token != "file-token" {
+		t.Errorf("token = %q, want %q", token, "file-token")
+	}
+}
+
+func TestSetAndGetActiveSession(t *testing.T) {
+	store := openTestStore(t)
+
+	err := SetActiveSession(store, "claude", "proj1", "my-session")
+	if err != nil {
+		t.Fatalf("SetActiveSession: %v", err)
+	}
+
+	name, err := GetActiveSession(store, "claude", "proj1", "default", "/tmp/proj")
+	if err != nil {
+		t.Fatalf("GetActiveSession: %v", err)
+	}
+	if name != "my-session" {
+		t.Errorf("name = %q, want %q", name, "my-session")
+	}
+}
+
+func TestGetActiveSession_FallbackToFile(t *testing.T) {
+	withTempConfigHome(t)
+	store := openTestStore(t)
+	projectDir := t.TempDir()
+
+	// Write active session file.
+	resumeDir := ProjectResumeDir("default", "claude", projectDir)
+	if err := os.MkdirAll(resumeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(resumeDir, ".active-session"), []byte("file-session\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	projectKey := project.GenerateFolderName(projectDir)
+	name, err := GetActiveSession(store, "claude", projectKey, "default", projectDir)
+	if err != nil {
+		t.Fatalf("GetActiveSession: %v", err)
+	}
+	if name != "file-session" {
+		t.Errorf("name = %q, want %q", name, "file-session")
+	}
+}
+
+func TestListNamesKV(t *testing.T) {
+	store := openTestStore(t)
+
+	// Save sessions to KV.
+	if err := SaveSessionName(store, "claude", "proj1", "sess_a", "alpha"); err != nil {
+		t.Fatalf("SaveSessionName: %v", err)
+	}
+	if err := SaveSessionName(store, "claude", "proj1", "sess_b", "beta"); err != nil {
+		t.Fatalf("SaveSessionName: %v", err)
+	}
+	// Also save a token (should not appear as a name).
+	if err := SaveResumeToken(store, "claude", "proj1", "sess_a", "tok"); err != nil {
+		t.Fatalf("SaveResumeToken: %v", err)
+	}
+
+	names, err := ListNamesKV(store, "claude", "proj1", "default", "/tmp/proj")
+	if err != nil {
+		t.Fatalf("ListNamesKV: %v", err)
+	}
+	want := []string{"alpha", "beta"}
+	if !slices.Equal(names, want) {
+		t.Errorf("ListNamesKV = %v, want %v", names, want)
+	}
+}
+
+func TestListNamesKV_FallbackToFile(t *testing.T) {
+	withTempConfigHome(t)
+	store := openTestStore(t)
+	projectDir := t.TempDir()
+
+	// Write sessions only to filesystem.
+	writeSessionDir(t, "default", "claude", projectDir, "a", "from-file")
+
+	projectKey := project.GenerateFolderName(projectDir)
+	names, err := ListNamesKV(store, "claude", projectKey, "default", projectDir)
+	if err != nil {
+		t.Fatalf("ListNamesKV: %v", err)
+	}
+	if len(names) != 1 || names[0] != "from-file" {
+		t.Errorf("ListNamesKV = %v, want [from-file]", names)
+	}
+}
+
+func TestRemoveByNameKV(t *testing.T) {
+	store := openTestStore(t)
+	withTempConfigHome(t)
+	projectDir := t.TempDir()
+
+	projectKey := project.GenerateFolderName(projectDir)
+
+	// Save sessions to KV.
+	if err := SaveSessionName(store, "claude", projectKey, "sess_a", "keep"); err != nil {
+		t.Fatalf("SaveSessionName: %v", err)
+	}
+	if err := SaveSessionName(store, "claude", projectKey, "sess_b", "drop"); err != nil {
+		t.Fatalf("SaveSessionName: %v", err)
+	}
+	if err := SaveResumeToken(store, "claude", projectKey, "sess_b", "tok"); err != nil {
+		t.Fatalf("SaveResumeToken: %v", err)
+	}
+	if err := SetActiveSession(store, "claude", projectKey, "drop"); err != nil {
+		t.Fatalf("SetActiveSession: %v", err)
+	}
+
+	removed, err := RemoveByNameKV(store, "claude", projectKey, "default", projectDir, "drop")
+	if err != nil {
+		t.Fatalf("RemoveByNameKV: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected removed=true")
+	}
+
+	// Verify "keep" is still there.
+	names, err := ListNamesKV(store, "claude", projectKey, "default", projectDir)
+	if err != nil {
+		t.Fatalf("ListNamesKV: %v", err)
+	}
+	if len(names) != 1 || names[0] != "keep" {
+		t.Errorf("expected only [keep], got %v", names)
+	}
+
+	// Verify active session was cleared.
+	_, err = GetActiveSession(store, "claude", projectKey, "default", projectDir)
+	if err == nil {
+		t.Error("expected active session to be cleared")
 	}
 }

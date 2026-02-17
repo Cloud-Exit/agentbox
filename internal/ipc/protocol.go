@@ -76,3 +76,53 @@ type VaultSetResponse struct {
 	Approved bool   `json:"approved"`
 	Error    string `json:"error,omitempty"`
 }
+
+// KVGetRequest is the payload for "kv_get" requests.
+type KVGetRequest struct {
+	Key string `json:"key"`
+}
+
+// KVGetResponse is the payload for "kv_get" responses.
+type KVGetResponse struct {
+	Value string `json:"value,omitempty"`
+	Found bool   `json:"found"`
+	Error string `json:"error,omitempty"`
+}
+
+// KVSetRequest is the payload for "kv_set" requests.
+type KVSetRequest struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// KVSetResponse is the payload for "kv_set" responses.
+type KVSetResponse struct {
+	Error string `json:"error,omitempty"`
+}
+
+// KVDeleteRequest is the payload for "kv_delete" requests.
+type KVDeleteRequest struct {
+	Key string `json:"key"`
+}
+
+// KVDeleteResponse is the payload for "kv_delete" responses.
+type KVDeleteResponse struct {
+	Error string `json:"error,omitempty"`
+}
+
+// KVListRequest is the payload for "kv_list" requests.
+type KVListRequest struct {
+	Prefix string `json:"prefix"`
+}
+
+// KVListEntry is a single key-value pair returned by kv_list.
+type KVListEntry struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// KVListResponse is the payload for "kv_list" responses.
+type KVListResponse struct {
+	Entries []KVListEntry `json:"entries,omitempty"`
+	Error   string        `json:"error,omitempty"`
+}

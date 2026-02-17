@@ -116,6 +116,13 @@ func buildLocalIntermediary(ctx context.Context, rt container.Runtime, cmd, base
 		}
 	}
 
+	// Write pre-built exitbox-kv binary for the container's architecture.
+	if extra, err := writeExitboxKV(buildCtx); err == nil && extra != "" {
+		if err := appendToFile(dockerfilePath, extra); err != nil {
+			ui.Warnf("Failed to append exitbox-kv to Dockerfile: %v", err)
+		}
+	}
+
 	args := buildArgs(cmd)
 	args = append(args,
 		"--build-arg", fmt.Sprintf("BASE_IMAGE=%s", baseRef),
@@ -209,6 +216,24 @@ func writeExitboxVault(buildCtx string) (string, error) {
 		return "", err
 	}
 	return "\n# Vault IPC client\nCOPY exitbox-vault /usr/local/bin/exitbox-vault\n", nil
+}
+
+// writeExitboxKV writes the exitbox-kv binary into the build context
+// and returns the Dockerfile snippet to COPY it. Returns empty string if
+// the binary could not be written.
+func writeExitboxKV(buildCtx string) (string, error) {
+	var kvBin []byte
+	switch runtime.GOARCH {
+	case "arm64":
+		kvBin = static.ExitboxKVArm64
+	default:
+		kvBin = static.ExitboxKVAmd64
+	}
+	if err := os.WriteFile(filepath.Join(buildCtx, "exitbox-kv"), kvBin, 0755); err != nil {
+		ui.Warnf("Failed to write exitbox-kv: %v", err)
+		return "", err
+	}
+	return "\n# KV IPC client\nCOPY exitbox-kv /usr/local/bin/exitbox-kv\n", nil
 }
 
 // pullImage pulls a container image, using a spinner in quiet mode or

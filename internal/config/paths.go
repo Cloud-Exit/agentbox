@@ -111,3 +111,8 @@ func VaultDir(workspace string) string {
 func VaultFile(workspace string) string {
 	return filepath.Join(VaultDir(workspace), "vault.enc")
 }
+
+// KVDir returns the KV store directory for a workspace.
+func KVDir(workspace string) string {
+	return filepath.Join(Data, "kv", workspace)
+}

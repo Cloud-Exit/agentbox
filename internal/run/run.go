@@ -193,6 +193,17 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		)
 	}
 
+	// Register KV IPC handlers (always enabled when IPC server is running).
+	if ipcServer != nil && activeWorkspace != nil {
+		kvCfg := ipc.KVHandlerConfig{
+			WorkspaceName: activeWorkspace.Workspace.Name,
+		}
+		ipcServer.Handle("kv_get", ipc.NewKVGetHandler(kvCfg))
+		ipcServer.Handle("kv_set", ipc.NewKVSetHandler(kvCfg))
+		ipcServer.Handle("kv_delete", ipc.NewKVDeleteHandler(kvCfg))
+		ipcServer.Handle("kv_list", ipc.NewKVListHandler(kvCfg))
+	}
+
 	// Register vault IPC handlers when vault is enabled for the workspace.
 	var vaultState *ipc.VaultState
 	if activeWorkspace != nil && activeWorkspace.Workspace.Vault.Enabled && ipcServer != nil {

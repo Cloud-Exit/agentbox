@@ -78,6 +78,7 @@ set -g history-limit 100000
 set -g pane-border-style "fg=colour236"
 set -g pane-active-border-style "fg=colour236"
 set -g message-style "bg=colour236,fg=colour255"
+set -g allow-passthrough on
 TMUXEOF
 
     if [[ "${EXITBOX_STATUS_BAR:-true}" != "true" ]]; then
@@ -321,8 +322,17 @@ active_session_file() {
     echo "$(project_resume_dir)/.active-session"
 }
 
+kv_session_prefix() {
+    echo "session:${AGENT}:${EXITBOX_PROJECT_KEY:-_}:"
+}
+
 set_active_session_name() {
     local name="$1"
+    # Write to KV store first.
+    if command -v exitbox-kv >/dev/null 2>&1; then
+        exitbox-kv set "$(kv_session_prefix).active-session" "$name" 2>/dev/null || true
+    fi
+    # Filesystem backup.
     local file
     file="$(active_session_file)"
     mkdir -p "$(dirname "$file")"
@@ -330,6 +340,15 @@ set_active_session_name() {
 }
 
 get_active_session_name() {
+    # Try KV store first.
+    if command -v exitbox-kv >/dev/null 2>&1; then
+        local kv_val
+        kv_val="$(exitbox-kv get "$(kv_session_prefix).active-session" 2>/dev/null)" && {
+            echo "$kv_val"
+            return
+        }
+    fi
+    # Filesystem fallback.
     local file
     file="$(active_session_file)"
     if [[ -f "$file" ]]; then
@@ -357,6 +376,13 @@ session_dir_for_name() {
 
 ensure_named_session_dir() {
     local name="$1"
+    local key
+    key="$(session_key_for_name "$name")"
+    # Write to KV store.
+    if command -v exitbox-kv >/dev/null 2>&1; then
+        exitbox-kv set "$(kv_session_prefix)${key}:.name" "$name" 2>/dev/null || true
+    fi
+    # Filesystem backup.
     local session_dir
     session_dir="$(session_dir_for_name "$name")"
     mkdir -p "$session_dir"
@@ -368,6 +394,24 @@ legacy_resume_file() {
 }
 
 session_entries() {
+    # Try KV store first.
+    if command -v exitbox-kv >/dev/null 2>&1; then
+        local kv_keys kv_names=""
+        kv_keys="$(exitbox-kv list "$(kv_session_prefix)" 2>/dev/null)" || kv_keys=""
+        if [[ -n "$kv_keys" ]]; then
+            while IFS= read -r kv_key; do
+                [[ "$kv_key" == *":.name" ]] || continue
+                local name
+                name="$(exitbox-kv get "$kv_key" 2>/dev/null)" || continue
+                [[ -n "$name" ]] && kv_names="${kv_names}${name}"$'\n'
+            done <<< "$kv_keys"
+            if [[ -n "$kv_names" ]]; then
+                echo "$kv_names" | sed '/^$/d' | awk '!seen[$0]++'
+                return
+            fi
+        fi
+    fi
+    # Filesystem fallback.
     local root
     root="$(project_resume_dir)/sessions"
     [[ -d "$root" ]] || return 0
@@ -523,6 +567,13 @@ capture_resume_token() {
     esac
 
     if [[ -n "$token" ]]; then
+        local key
+        key="$(session_key_for_name "$session_name")"
+        # Write to KV store.
+        if command -v exitbox-kv >/dev/null 2>&1; then
+            exitbox-kv set "$(kv_session_prefix)${key}:.resume-token" "$token" 2>/dev/null || true
+        fi
+        # Filesystem backup.
         echo "$token" > "$token_file"
         # Keep a single-slot token as compatibility fallback for older logic.
         echo "$token" > "$(legacy_resume_file)"
@@ -593,7 +644,14 @@ build_resume_args() {
     session_dir="$(session_dir_for_name "$session_name")"
     session_file="${session_dir}/.resume-token"
     token=""
-    if [[ -f "$session_file" ]]; then
+    # Try KV store first.
+    local session_key
+    session_key="$(session_key_for_name "$session_name")"
+    if command -v exitbox-kv >/dev/null 2>&1; then
+        token="$(exitbox-kv get "$(kv_session_prefix)${session_key}:.resume-token" 2>/dev/null)" || token=""
+    fi
+    # Filesystem fallback.
+    if [[ -z "$token" && -f "$session_file" ]]; then
         token="$(cat "$session_file")"
     fi
 
@@ -934,6 +992,39 @@ approval before proceeding. If denied, inform the user and do not retry.
     fi
 fi
 
+# Append KV store instructions (always available when IPC is running).
+SANDBOX_INSTRUCTIONS="${SANDBOX_INSTRUCTIONS}
+<!-- BEGIN-EXITBOX-KV -->
+# KV Store for Session Data
+
+A key-value store (\`exitbox-kv\`) is available for persisting non-sensitive
+session metadata (session names, resume tokens, preferences, bookmarks).
+
+## Commands
+
+\`\`\`bash
+exitbox-kv get <KEY>              # Get a value (stdout, exit 1 if missing)
+exitbox-kv set <KEY> <VALUE>      # Store a value
+exitbox-kv delete <KEY>           # Remove a key
+exitbox-kv list [PREFIX]          # List matching keys, one per line
+\`\`\`
+
+## Rules — MANDATORY
+
+1. **NEVER store secrets in KV.** Passwords, API keys, tokens, credentials,
+   private keys, and any other sensitive values MUST go in the vault
+   (\`exitbox-vault\`), NEVER in KV. The KV store is NOT encrypted and has
+   NO access-control prompts. If in doubt, use the vault.
+
+2. **KV is for metadata only.** Appropriate values: session names, resume
+   tokens (opaque IDs, not secrets), UI preferences, feature flags, timestamps,
+   project bookmarks. Inappropriate values: anything you would redact.
+
+3. **Do not duplicate vault data.** Never copy a vault secret into KV for
+   convenience. Always read secrets from the vault at point of use.
+<!-- END-EXITBOX-KV -->
+"
+
 inject_sandbox_instructions() {
     local target=""
     case "$AGENT" in
@@ -966,6 +1057,10 @@ inject_sandbox_instructions() {
         # Remove any existing vault blocks from previous runs.
         if grep -q "BEGIN-EXITBOX-VAULT" "$target" 2>/dev/null; then
             sed -i '/<!-- BEGIN-EXITBOX-VAULT -->/,/<!-- END-EXITBOX-VAULT -->/d' "$target"
+        fi
+        # Remove any existing KV blocks from previous runs.
+        if grep -q "BEGIN-EXITBOX-KV" "$target" 2>/dev/null; then
+            sed -i '/<!-- BEGIN-EXITBOX-KV -->/,/<!-- END-EXITBOX-KV -->/d' "$target"
         fi
         printf '\n%s' "$SANDBOX_INSTRUCTIONS" >> "$target"
     else

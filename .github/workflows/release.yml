@@ -73,6 +73,11 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o static/build/exitbox-allow-amd64 ./cmd/exitbox-allow/
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o static/build/exitbox-allow-arm64 ./cmd/exitbox-allow/
 
+      - name: Build exitbox-kv (embedded in main binary)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o static/build/exitbox-kv-amd64 ./cmd/exitbox-kv/
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o static/build/exitbox-kv-arm64 ./cmd/exitbox-kv/
+
       - name: Build binaries
         run: |
           VERSION=${GITHUB_REF_NAME}

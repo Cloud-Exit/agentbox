@@ -17,6 +17,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,8 +25,31 @@ import (
 	"strings"
 
 	"github.com/cloud-exit/exitbox/internal/config"
+	"github.com/cloud-exit/exitbox/internal/kvstore"
 	"github.com/cloud-exit/exitbox/internal/project"
 )
+
+// KV key helpers
+
+// kvSessionPrefix returns the KV key prefix for sessions of a given agent/project.
+func kvSessionPrefix(agentName, projectKey string) string {
+	return "session:" + agentName + ":" + projectKey + ":"
+}
+
+// kvNameKey returns the KV key for a session's display name.
+func kvNameKey(agentName, projectKey, sessionKey string) string {
+	return kvSessionPrefix(agentName, projectKey) + sessionKey + ":.name"
+}
+
+// kvResumeTokenKey returns the KV key for a session's resume token.
+func kvResumeTokenKey(agentName, projectKey, sessionKey string) string {
+	return kvSessionPrefix(agentName, projectKey) + sessionKey + ":.resume-token"
+}
+
+// kvActiveSessionKey returns the KV key for the active session pointer.
+func kvActiveSessionKey(agentName, projectKey string) string {
+	return kvSessionPrefix(agentName, projectKey) + ".active-session"
+}
 
 // ProjectResumeDir returns the project-scoped resume directory for a workspace/agent.
 func ProjectResumeDir(workspaceName, agentName, projectDir string) string {
@@ -44,6 +68,161 @@ func ProjectResumeDir(workspaceName, agentName, projectDir string) string {
 // ProjectSessionsDir returns the project-scoped sessions directory.
 func ProjectSessionsDir(workspaceName, agentName, projectDir string) string {
 	return filepath.Join(ProjectResumeDir(workspaceName, agentName, projectDir), "sessions")
+}
+
+// SaveResumeToken writes a resume token to the KV store for the given session.
+func SaveResumeToken(store *kvstore.Store, agentName, projectKey, sessionKey, token string) error {
+	return store.Set([]byte(kvResumeTokenKey(agentName, projectKey, sessionKey)), []byte(token))
+}
+
+// LoadResumeToken reads a resume token from the KV store, falling back to
+// the filesystem for backward compatibility.
+func LoadResumeToken(store *kvstore.Store, agentName, projectKey, sessionKey, workspaceName, projectDir string) (string, error) {
+	val, err := store.Get([]byte(kvResumeTokenKey(agentName, projectKey, sessionKey)))
+	if err == nil {
+		return string(val), nil
+	}
+	if !errors.Is(err, kvstore.ErrNotFound) {
+		return "", err
+	}
+
+	// Filesystem fallback.
+	sessionsDir := ProjectSessionsDir(workspaceName, agentName, projectDir)
+	tokenFile := filepath.Join(sessionsDir, sessionKey, ".resume-token")
+	raw, readErr := os.ReadFile(tokenFile)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return "", kvstore.ErrNotFound
+		}
+		return "", readErr
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", kvstore.ErrNotFound
+	}
+	// Migrate to KV.
+	_ = store.Set([]byte(kvResumeTokenKey(agentName, projectKey, sessionKey)), []byte(token))
+	return token, nil
+}
+
+// SetActiveSession writes the active session name to the KV store.
+func SetActiveSession(store *kvstore.Store, agentName, projectKey, name string) error {
+	return store.Set([]byte(kvActiveSessionKey(agentName, projectKey)), []byte(name))
+}
+
+// GetActiveSession reads the active session name from the KV store, falling
+// back to the filesystem.
+func GetActiveSession(store *kvstore.Store, agentName, projectKey, workspaceName, projectDir string) (string, error) {
+	val, err := store.Get([]byte(kvActiveSessionKey(agentName, projectKey)))
+	if err == nil {
+		return string(val), nil
+	}
+	if !errors.Is(err, kvstore.ErrNotFound) {
+		return "", err
+	}
+
+	// Filesystem fallback.
+	activeFile := filepath.Join(ProjectResumeDir(workspaceName, agentName, projectDir), ".active-session")
+	raw, readErr := os.ReadFile(activeFile)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return "", kvstore.ErrNotFound
+		}
+		return "", readErr
+	}
+	name := strings.TrimSpace(string(raw))
+	if name == "" {
+		return "", kvstore.ErrNotFound
+	}
+	// Migrate to KV.
+	_ = store.Set([]byte(kvActiveSessionKey(agentName, projectKey)), []byte(name))
+	return name, nil
+}
+
+// SaveSessionName writes the session name to the KV store for a given session key.
+func SaveSessionName(store *kvstore.Store, agentName, projectKey, sessionKey, name string) error {
+	return store.Set([]byte(kvNameKey(agentName, projectKey, sessionKey)), []byte(name))
+}
+
+// ListNamesKV returns all named sessions from the KV store for an agent/project,
+// falling back to the filesystem when KV has no entries.
+func ListNamesKV(store *kvstore.Store, agentName, projectKey, workspaceName, projectDir string) ([]string, error) {
+	prefix := kvSessionPrefix(agentName, projectKey)
+	seen := make(map[string]struct{})
+	var names []string
+
+	err := store.Iterate([]byte(prefix), func(key, value []byte) error {
+		k := string(key)
+		if strings.HasSuffix(k, ":.name") {
+			name := string(value)
+			if name != "" {
+				if _, ok := seen[name]; !ok {
+					seen[name] = struct{}{}
+					names = append(names, name)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(names) > 0 {
+		sort.Strings(names)
+		return names, nil
+	}
+
+	// Filesystem fallback.
+	return ListNames(workspaceName, agentName, projectDir)
+}
+
+// RemoveByNameKV removes a named session from the KV store and filesystem.
+func RemoveByNameKV(store *kvstore.Store, agentName, projectKey, workspaceName, projectDir, sessionName string) (bool, error) {
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return false, fmt.Errorf("session name cannot be empty")
+	}
+
+	// Find and remove matching KV entries.
+	prefix := kvSessionPrefix(agentName, projectKey)
+	var keysToDelete [][]byte
+	kvRemoved := false
+
+	err := store.Iterate([]byte(prefix), func(key, value []byte) error {
+		k := string(key)
+		if strings.HasSuffix(k, ":.name") && string(value) == sessionName {
+			// Found a matching session. Collect all keys for this session key.
+			sessionKey := strings.TrimSuffix(strings.TrimPrefix(k, prefix), ":.name")
+			keysToDelete = append(keysToDelete,
+				[]byte(kvNameKey(agentName, projectKey, sessionKey)),
+				[]byte(kvResumeTokenKey(agentName, projectKey, sessionKey)),
+			)
+			kvRemoved = true
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+
+	for _, key := range keysToDelete {
+		_ = store.Delete(key)
+	}
+
+	// Clear active session pointer if it matches.
+	active, getErr := store.Get([]byte(kvActiveSessionKey(agentName, projectKey)))
+	if getErr == nil && string(active) == sessionName {
+		_ = store.Delete([]byte(kvActiveSessionKey(agentName, projectKey)))
+	}
+
+	// Also remove from filesystem.
+	fsRemoved, fsErr := RemoveByName(workspaceName, agentName, projectDir, sessionName)
+	if fsErr != nil {
+		return kvRemoved || fsRemoved, fsErr
+	}
+
+	return kvRemoved || fsRemoved, nil
 }
 
 // ListNames returns all named sessions for a workspace/agent/project.

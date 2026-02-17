@@ -46,6 +46,12 @@ var ExitboxVaultAmd64 []byte
 //go:embed build/exitbox-vault-arm64
 var ExitboxVaultArm64 []byte
 
+//go:embed build/exitbox-kv-amd64
+var ExitboxKVAmd64 []byte
+
+//go:embed build/exitbox-kv-arm64
+var ExitboxKVArm64 []byte
+
 //go:embed config/allowlist.txt
 var DefaultAllowlistTxt []byte
 
