@@ -993,6 +993,28 @@ approval before proceeding. If denied, inform the user and do not retry.
 fi
 
 # Append KV store instructions (always available when IPC is running).
+KV_RULES="1. **NEVER store secrets in KV.** Passwords, API keys, tokens, credentials,
+   private keys, and any other sensitive values MUST NOT be stored in KV.
+   The KV store is NOT encrypted and has NO access-control prompts.
+
+2. **KV is for metadata only.** Appropriate values: session names, resume
+   tokens (opaque IDs, not secrets), UI preferences, feature flags, timestamps,
+   project bookmarks. Inappropriate values: anything you would redact."
+
+if [[ "${EXITBOX_VAULT_ENABLED:-}" == "true" ]]; then
+    KV_RULES="1. **NEVER store secrets in KV.** Passwords, API keys, tokens, credentials,
+   private keys, and any other sensitive values MUST go in the vault
+   (\`exitbox-vault\`), NEVER in KV. The KV store is NOT encrypted and has
+   NO access-control prompts. If in doubt, use the vault.
+
+2. **KV is for metadata only.** Appropriate values: session names, resume
+   tokens (opaque IDs, not secrets), UI preferences, feature flags, timestamps,
+   project bookmarks. Inappropriate values: anything you would redact.
+
+3. **Do not duplicate vault data.** Never copy a vault secret into KV for
+   convenience. Always read secrets from the vault at point of use."
+fi
+
 SANDBOX_INSTRUCTIONS="${SANDBOX_INSTRUCTIONS}
 <!-- BEGIN-EXITBOX-KV -->
 # KV Store for Session Data
@@ -1011,17 +1033,7 @@ exitbox-kv list [PREFIX]          # List matching keys, one per line
 
 ## Rules — MANDATORY
 
-1. **NEVER store secrets in KV.** Passwords, API keys, tokens, credentials,
-   private keys, and any other sensitive values MUST go in the vault
-   (\`exitbox-vault\`), NEVER in KV. The KV store is NOT encrypted and has
-   NO access-control prompts. If in doubt, use the vault.
-
-2. **KV is for metadata only.** Appropriate values: session names, resume
-   tokens (opaque IDs, not secrets), UI preferences, feature flags, timestamps,
-   project bookmarks. Inappropriate values: anything you would redact.
-
-3. **Do not duplicate vault data.** Never copy a vault secret into KV for
-   convenience. Always read secrets from the vault at point of use.
+${KV_RULES}
 <!-- END-EXITBOX-KV -->
 "
 
