@@ -231,6 +231,23 @@ exitbox uninstall <agent> # Remove agent images and config
 exitbox aliases           # Print shell aliases for ~/.bashrc
 ```
 
+### Config Generation
+
+Generate agent configuration files for third-party LLM servers (Ollama, vLLM, LM Studio, etc.):
+
+```bash
+exitbox generate opencode              # Configure OpenCode for a custom provider
+exitbox generate claude -w work        # Configure Claude Code in 'work' workspace
+exitbox generate codex                 # Configure Codex for a custom provider
+```
+
+The wizard prompts for server URL, API key, tests connectivity via `GET /v1/models`,
+lets you pick a model from the discovered list, and writes the correct config file
+into the workspace profile directory. Existing config is preserved via deep merge.
+
+When vault is enabled for the workspace, the wizard offers to store the API key
+in the vault instead of writing it to the config file.
+
 ### Workspace Management
 
 Workspaces are named contexts (e.g. `personal`, `work`, `client-a`) that provide isolated agent configurations, credentials, and development stacks. Each workspace stores its own agent config directories, so API keys and conversation history are kept separate.

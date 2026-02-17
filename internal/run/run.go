@@ -17,6 +17,7 @@
 package run
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
+	"github.com/cloud-exit/exitbox/internal/generate"
 	"github.com/cloud-exit/exitbox/internal/ipc"
 	"github.com/cloud-exit/exitbox/internal/network"
 	"github.com/cloud-exit/exitbox/internal/profile"
@@ -81,6 +83,55 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	// Podman-specific
 	if cmd == "podman" {
 		args = append(args, "--userns=keep-id", "--security-opt=no-new-privileges")
+	}
+
+	// Workspace resolution (needed early for config host detection).
+	cfg := config.LoadOrDefault()
+	activeWorkspace, err := profile.ResolveActiveWorkspace(cfg, opts.ProjectDir, opts.WorkspaceOverride)
+	if err != nil {
+		return 1, fmt.Errorf("failed to resolve active workspace: %w", err)
+	}
+
+	// Detect hosts in agent config and offer to permanently allow them through the firewall.
+	if activeWorkspace != nil && !opts.NoFirewall {
+		agentDir := profile.WorkspaceAgentDir(activeWorkspace.Workspace.Name, opts.Agent)
+		configHosts := generate.ExtractConfigHosts(agentDir, opts.Agent)
+		if len(configHosts) > 0 {
+			// Filter out hosts already in the permanent allowlist.
+			allowlist := config.LoadAllowlistOrDefault()
+			allowed := make(map[string]struct{})
+			for _, d := range allowlist.AllDomains() {
+				allowed[d] = struct{}{}
+			}
+			var newHosts []string
+			for _, h := range configHosts {
+				if _, ok := allowed[h]; !ok {
+					newHosts = append(newHosts, h)
+				}
+			}
+			if len(newHosts) > 0 {
+				shouldAllow := true
+				if term.IsTerminal(int(os.Stdin.Fd())) {
+					fmt.Println("Detected server in agent config:")
+					for _, h := range newHosts {
+						fmt.Printf("  - %s\n", h)
+					}
+					fmt.Print("Allow through firewall? [Y/n]: ")
+					reader := bufio.NewReader(os.Stdin)
+					answer, _ := reader.ReadString('\n')
+					answer = strings.TrimSpace(strings.ToLower(answer))
+					shouldAllow = answer == "" || answer == "y" || answer == "yes"
+				}
+				if shouldAllow {
+					allowlist.Custom = append(allowlist.Custom, newHosts...)
+					if err := config.SaveAllowlist(allowlist); err != nil {
+						ui.Warnf("Failed to save allowlist: %v", err)
+						// Fall back to session-level allow so this run still works.
+						opts.AllowURLs = append(opts.AllowURLs, newHosts...)
+					}
+				}
+			}
+		}
 	}
 
 	// Ollama mode: route traffic through the firewall to host Ollama.
@@ -160,13 +211,6 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		dir = strings.TrimSuffix(dir, "/")
 		base := filepath.Base(dir)
 		args = append(args, "-v", dir+":/workspace/"+base)
-	}
-
-	// Workspace resolution and isolated config mounts.
-	cfg := config.LoadOrDefault()
-	activeWorkspace, err := profile.ResolveActiveWorkspace(cfg, opts.ProjectDir, opts.WorkspaceOverride)
-	if err != nil {
-		return 1, fmt.Errorf("failed to resolve active workspace: %w", err)
 	}
 
 	// Mount config.yaml individually (read-write for in-container workspace switching).
