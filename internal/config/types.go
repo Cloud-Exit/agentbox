@@ -35,7 +35,8 @@ type WorkspaceCatalog struct {
 
 // VaultConfig holds encrypted vault settings for a workspace.
 type VaultConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled  bool `yaml:"enabled"`
+	ReadOnly bool `yaml:"read_only,omitempty"`
 }
 
 // Workspace is a named workspace (e.g. personal/work) with development stacks.

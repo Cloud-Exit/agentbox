@@ -51,7 +51,7 @@ ExitBox automatically:
 - **Rootless Containers** — runs without host root privileges using Podman's user namespaces (Docker fallback supported)
 - **Squid Proxy Firewall** — strict domain allowlisting with hard egress isolation; agents can only reach approved destinations
 - **Runtime Domain Requests** — agents request access to new domains at runtime via `exitbox-allow`; host user approves via popup
-- **Encrypted Vault** — AES-256 + Argon2id encrypted secret storage with per-read approval popups; replaces `.env` files inside containers
+- **Encrypted Vault** — AES-256 + Argon2id encrypted secret storage with per-access approval popups; agents can read and write secrets from inside the container
 - **Sandbox-Aware Agents** — automatic instruction injection tells agents about container restrictions, vault usage, and security rules
 - **Named Resumable Sessions** — save and resume agent conversations by name across container restarts
 - **Multi-Agent Support** — run Claude Code, OpenAI Codex, or OpenCode in the same isolated environment
@@ -106,14 +106,15 @@ When agents like Claude Code and Codex exit, they display a resume token (e.g. `
 
 ### Encrypted Vault
 
-ExitBox includes a built-in encrypted secret vault so agents can access API keys, tokens, and credentials without `.env` files being exposed inside the container.
+ExitBox includes a built-in encrypted secret vault so agents can read and write API keys, tokens, and credentials without `.env` files being exposed inside the container.
 
 - **AES-256 encryption** with **Argon2id** key derivation — no external dependencies required
-- **Per-read approval**: Every secret access triggers a tmux popup requiring explicit user confirmation
+- **Per-access approval**: Every secret read or write triggers a tmux popup requiring explicit user confirmation
+- **Agent-initiated writes**: Agents can store secrets directly via `exitbox-vault set <KEY> <VALUE>` from inside the container — the host user approves each write via popup
 - **`.env` masking**: When vault is enabled, all `.env*` files are automatically hidden inside the container
 - **Embedded storage**: Secrets are stored in an encrypted [Badger](https://github.com/dgraph-io/badger) database per workspace
 
-The first access in a session prompts for the vault password. Subsequent reads only require the per-key approval popup. Inside the container, agents use `exitbox-vault get <KEY>` to retrieve secrets via IPC. See [Vault Management](#vault-management) for the full CLI reference.
+The first access in a session prompts for the vault password. Subsequent reads only require the per-key approval popup. Inside the container, agents use `exitbox-vault` to read and write secrets via IPC. See [Vault Management](#vault-management) for the full CLI reference.
 
 ## Supported Agents
 
@@ -272,6 +273,38 @@ exitbox vault edit                      # Edit secrets in $EDITOR (KEY=VALUE for
 exitbox vault status                    # Show vault state for a workspace
 exitbox vault destroy                   # Permanently delete a vault
 ```
+
+#### In-Container Vault Commands
+
+Inside the container, agents use the `exitbox-vault` binary to interact with the vault over IPC:
+
+```bash
+exitbox-vault list                    # List key names
+exitbox-vault get <KEY>               # Get a secret value (stdout)
+exitbox-vault set <KEY> <VALUE>       # Store a secret (host approval required)
+exitbox-vault env                     # Print all KEY=VALUE pairs
+```
+
+Every `get` and `set` triggers a tmux popup on the host terminal requiring explicit approval before the operation proceeds.
+
+#### Agent Secret Workflow
+
+When an agent detects or generates a secret (API key, token, password), it follows this workflow:
+
+1. **Ask for a key name** — the agent prompts the user for a vault key name before attempting to store anything
+2. **Generate and store in one step** — the secret is piped directly into `exitbox-vault set` so it never appears in command output:
+   ```bash
+   exitbox-vault set MY_TOKEN "$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")"
+   ```
+3. **Host approves** — a tmux popup appears on the host terminal; the host user must approve the write
+4. **Use via variable** — the agent retrieves the secret into a shell variable and uses it inline:
+   ```bash
+   TOKEN=$(exitbox-vault get MY_TOKEN)
+   curl -H "Authorization: Bearer $TOKEN" https://api.example.com
+   ```
+5. **Redact output** — any command output that might echo the secret is captured and redacted before display
+
+Agents are automatically informed about vault commands and these rules via sandbox instructions injected at container start.
 
 #### How Workspaces Work
 

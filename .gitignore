@@ -1,5 +1,6 @@
 .exitbox
 exitbox
+exitbox-proxy
 .claude
 coverage.out
 coverage.txt

@@ -31,6 +31,7 @@ type SetupResult struct {
 	IsDefault     bool     // true if this workspace is the default
 	Agents        []string // enabled agent names (e.g. ["claude", "codex"])
 	VaultEnabled  bool     // enable encrypted vault for secrets
+	VaultReadOnly bool     // vault is read-only (agents cannot store new secrets)
 	VaultPassword string   // vault encryption password (non-empty when VaultEnabled)
 }
 
@@ -72,6 +73,7 @@ func Run(existingCfg *config.Config) (*SetupResult, error) {
 		IsDefault:     isDefault,
 		Agents:        result.Agents,
 		VaultEnabled:  result.VaultEnabled,
+		VaultReadOnly: result.VaultReadOnly,
 		VaultPassword: result.VaultPassword,
 	}, nil
 }
@@ -82,6 +84,7 @@ type WorkspaceCreationResult struct {
 	MakeDefault   bool
 	CopyFrom      string // workspace to copy credentials from (empty = none)
 	VaultEnabled  bool   // enable encrypted vault for secrets
+	VaultReadOnly bool   // vault is read-only (agents cannot store new secrets)
 	VaultPassword string // vault encryption password (non-empty when VaultEnabled)
 }
 
@@ -113,11 +116,12 @@ func RunWorkspaceCreation(existingCfg *config.Config, workspaceName string) (*Wo
 			Name:        name,
 			Development: ComputeProfiles(wm.Result().Roles, wm.Result().Languages),
 			Packages:    wm.Result().CustomPackages,
-			Vault:       config.VaultConfig{Enabled: wm.Result().VaultEnabled},
+			Vault:       config.VaultConfig{Enabled: wm.Result().VaultEnabled, ReadOnly: wm.Result().VaultReadOnly},
 		},
 		MakeDefault:   wm.Result().MakeDefault,
 		CopyFrom:      wm.Result().CopyFrom,
 		VaultEnabled:  wm.Result().VaultEnabled,
+		VaultReadOnly: wm.Result().VaultReadOnly,
 		VaultPassword: wm.Result().VaultPassword,
 	}, nil
 }
@@ -167,7 +171,7 @@ func applyResult(state State, existingCfg *config.Config) error {
 		Name:        workspaceName,
 		Development: development,
 		Packages:    state.CustomPackages,
-		Vault:       config.VaultConfig{Enabled: state.VaultEnabled},
+		Vault:       config.VaultConfig{Enabled: state.VaultEnabled, ReadOnly: state.VaultReadOnly},
 	})
 	cfg.Settings.DefaultWorkspace = state.DefaultWorkspace
 

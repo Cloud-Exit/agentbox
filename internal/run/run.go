@@ -158,8 +158,8 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 			continue
 		}
 		dir = strings.TrimSuffix(dir, "/")
-		rel := strings.TrimPrefix(dir, "/")
-		args = append(args, "-v", dir+":/workspace/"+rel)
+		base := filepath.Base(dir)
+		args = append(args, "-v", dir+":/workspace/"+base)
 	}
 
 	// Workspace resolution and isolated config mounts.
@@ -204,6 +204,9 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		}
 		ipcServer.Handle("vault_get", ipc.NewVaultGetHandler(vCfg, vaultState))
 		ipcServer.Handle("vault_list", ipc.NewVaultListHandler(vCfg, vaultState))
+		if !activeWorkspace.Workspace.Vault.ReadOnly {
+			ipcServer.Handle("vault_set", ipc.NewVaultSetHandler(vCfg, vaultState))
+		}
 	}
 	defer func() {
 		if vaultState != nil {
@@ -214,6 +217,9 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 	// Vault env var and .env masking
 	if activeWorkspace != nil && activeWorkspace.Workspace.Vault.Enabled {
 		args = append(args, "-e", "EXITBOX_VAULT_ENABLED=true")
+		if activeWorkspace.Workspace.Vault.ReadOnly {
+			args = append(args, "-e", "EXITBOX_VAULT_READONLY=true")
+		}
 
 		// Mask all .env* files (except sample/example files) by mounting /dev/null over them.
 		matches, _ := filepath.Glob(filepath.Join(opts.ProjectDir, ".env*"))
@@ -373,6 +379,7 @@ func isReservedEnvVar(key string) bool {
 		"EXITBOX_SESSION_NAME":    true,
 		"EXITBOX_KEYBINDINGS":     true,
 		"EXITBOX_VAULT_ENABLED":   true,
+		"EXITBOX_VAULT_READONLY":  true,
 		"TERM":                    true,
 		"http_proxy":              true,
 		"https_proxy":             true,

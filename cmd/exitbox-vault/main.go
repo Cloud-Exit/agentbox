@@ -20,9 +20,10 @@
 //
 // Usage:
 //
-//	exitbox-vault get <KEY>     # prints value to stdout
-//	exitbox-vault list          # prints key names, one per line
-//	exitbox-vault env           # prints KEY=VALUE pairs (for eval)
+//	exitbox-vault get <KEY>          # prints value to stdout
+//	exitbox-vault set <KEY> <VALUE>  # stores a secret in the vault
+//	exitbox-vault list               # prints key names, one per line
+//	exitbox-vault env                # prints KEY=VALUE pairs (for eval)
 package main
 
 import (
@@ -62,6 +63,16 @@ type vaultListResponse struct {
 	Error    string   `json:"error,omitempty"`
 }
 
+type vaultSetPayload struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type vaultSetResponse struct {
+	Approved bool   `json:"approved"`
+	Error    string `json:"error,omitempty"`
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -75,6 +86,12 @@ func main() {
 			os.Exit(1)
 		}
 		cmdGet(os.Args[2])
+	case "set":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "Usage: exitbox-vault set <KEY> <VALUE>")
+			os.Exit(1)
+		}
+		cmdSet(os.Args[2], os.Args[3])
 	case "list":
 		cmdList()
 	case "env":
@@ -87,9 +104,10 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  exitbox-vault get <KEY>     # prints secret value to stdout")
-	fmt.Fprintln(os.Stderr, "  exitbox-vault list          # prints key names, one per line")
-	fmt.Fprintln(os.Stderr, "  exitbox-vault env           # prints KEY=VALUE pairs (for eval)")
+	fmt.Fprintln(os.Stderr, "  exitbox-vault get <KEY>          # prints secret value to stdout")
+	fmt.Fprintln(os.Stderr, "  exitbox-vault set <KEY> <VALUE>  # stores a secret in the vault")
+	fmt.Fprintln(os.Stderr, "  exitbox-vault list               # prints key names, one per line")
+	fmt.Fprintln(os.Stderr, "  exitbox-vault env                # prints KEY=VALUE pairs (for eval)")
 }
 
 func cmdGet(key string) {
@@ -107,6 +125,23 @@ func cmdGet(key string) {
 		os.Exit(1)
 	}
 	fmt.Print(resp.Value)
+}
+
+func cmdSet(key, value string) {
+	resp, err := sendVaultSet(key, value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Error != "" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Error)
+		os.Exit(1)
+	}
+	if !resp.Approved {
+		fmt.Fprintln(os.Stderr, "Denied: host user rejected the secret write request")
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Stored %s in vault\n", key)
 }
 
 func cmdList() {
@@ -214,6 +249,59 @@ func sendVaultGet(key string) (*vaultGetResponse, error) {
 	}
 
 	var payload vaultGetResponse
+	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
+		return nil, err
+	}
+
+	return &payload, nil
+}
+
+func sendVaultSet(key, value string) (*vaultSetResponse, error) {
+	socketPath := os.Getenv("EXITBOX_IPC_SOCKET")
+	if socketPath == "" {
+		socketPath = "/run/exitbox/host.sock"
+	}
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("IPC socket not available. Vault requires the IPC server to be running")
+	}
+	defer conn.Close()
+
+	id := randomID()
+	req := request{
+		Type: "vault_set",
+		ID:   id,
+		Payload: vaultSetPayload{
+			Key:   key,
+			Value: value,
+		},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, '\n')
+
+	if _, err := conn.Write(data); err != nil {
+		return nil, err
+	}
+
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		if scanErr := scanner.Err(); scanErr != nil {
+			return nil, scanErr
+		}
+		return nil, fmt.Errorf("no response from host")
+	}
+
+	var resp response
+	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		return nil, err
+	}
+
+	var payload vaultSetResponse
 	if err := json.Unmarshal(resp.Payload, &payload); err != nil {
 		return nil, err
 	}

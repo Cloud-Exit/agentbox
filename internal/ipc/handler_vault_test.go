@@ -359,3 +359,199 @@ func sendVaultList(t *testing.T, srv *Server) VaultListResponse {
 	}
 	return result
 }
+
+func TestVaultSetApproved(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	state := &VaultState{}
+	defer state.Cleanup()
+
+	store := map[string]string{"EXISTING": "val"}
+	var setKey, setValue string
+
+	srv.Handle("vault_set", NewVaultSetHandler(VaultHandlerConfig{
+		PromptApproveSetFunc: func(key string) (bool, error) {
+			return true, nil
+		},
+		PromptPasswordFunc: func() (string, error) {
+			return "testpass", nil
+		},
+		OpenFunc: func(workspace, password string) (map[string]string, error) {
+			return store, nil
+		},
+		QuickSetFunc: func(workspace, password, key, value string) error {
+			setKey = key
+			setValue = value
+			return nil
+		},
+		WorkspaceName: "test",
+	}, state))
+	srv.Start()
+
+	resp := sendVaultSet(t, srv, "NEW_KEY", "new_value")
+	if !resp.Approved {
+		t.Error("expected approved=true")
+	}
+	if resp.Error != "" {
+		t.Errorf("unexpected error: %s", resp.Error)
+	}
+	if setKey != "NEW_KEY" {
+		t.Errorf("setKey = %q, want %q", setKey, "NEW_KEY")
+	}
+	if setValue != "new_value" {
+		t.Errorf("setValue = %q, want %q", setValue, "new_value")
+	}
+
+	// Verify in-memory cache was updated.
+	state.mu.Lock()
+	cached, ok := state.store["NEW_KEY"]
+	state.mu.Unlock()
+	if !ok {
+		t.Error("NEW_KEY not found in state cache")
+	}
+	if cached != "new_value" {
+		t.Errorf("cached value = %q, want %q", cached, "new_value")
+	}
+}
+
+func TestVaultSetDenied(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	state := &VaultState{}
+	defer state.Cleanup()
+
+	quickSetCalled := false
+
+	srv.Handle("vault_set", NewVaultSetHandler(VaultHandlerConfig{
+		PromptApproveSetFunc: func(key string) (bool, error) {
+			return false, nil
+		},
+		PromptPasswordFunc: func() (string, error) { return "", nil },
+		OpenFunc:           func(w, p string) (map[string]string, error) { return nil, nil },
+		QuickSetFunc: func(workspace, password, key, value string) error {
+			quickSetCalled = true
+			return nil
+		},
+		WorkspaceName: "test",
+	}, state))
+	srv.Start()
+
+	resp := sendVaultSet(t, srv, "MY_KEY", "my_value")
+	if resp.Approved {
+		t.Error("expected approved=false")
+	}
+	if quickSetCalled {
+		t.Error("QuickSetFunc should not be called when denied")
+	}
+}
+
+func TestVaultSetEmptyKey(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	state := &VaultState{}
+	defer state.Cleanup()
+
+	srv.Handle("vault_set", NewVaultSetHandler(VaultHandlerConfig{
+		PromptApproveSetFunc: func(key string) (bool, error) {
+			t.Error("approve should not be called for empty key")
+			return false, nil
+		},
+		PromptPasswordFunc: func() (string, error) { return "", nil },
+		OpenFunc:           func(w, p string) (map[string]string, error) { return nil, nil },
+		QuickSetFunc:       func(w, p, k, v string) error { return nil },
+		WorkspaceName:      "test",
+	}, state))
+	srv.Start()
+
+	resp := sendVaultSet(t, srv, "", "some_value")
+	if resp.Error == "" {
+		t.Error("expected error for empty key")
+	}
+}
+
+func TestVaultSetInvalidKey(t *testing.T) {
+	srv, err := NewServer()
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Stop()
+
+	state := &VaultState{}
+	defer state.Cleanup()
+
+	srv.Handle("vault_set", NewVaultSetHandler(VaultHandlerConfig{
+		PromptApproveSetFunc: func(key string) (bool, error) {
+			t.Error("approve should not be called for invalid key")
+			return false, nil
+		},
+		PromptPasswordFunc: func() (string, error) { return "", nil },
+		OpenFunc:           func(w, p string) (map[string]string, error) { return nil, nil },
+		QuickSetFunc:       func(w, p, k, v string) error { return nil },
+		WorkspaceName:      "test",
+	}, state))
+	srv.Start()
+
+	resp := sendVaultSet(t, srv, "KEY WITH SPACES", "some_value")
+	if resp.Error == "" {
+		t.Error("expected error for invalid key")
+	}
+}
+
+func sendVaultSet(t *testing.T, srv *Server, key, value string) VaultSetResponse {
+	t.Helper()
+
+	conn, err := net.Dial("unix", srv.socketPath)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+
+	payload, err := json.Marshal(VaultSetRequest{Key: key, Value: value})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req := Request{
+		Type:    "vault_set",
+		ID:      "test",
+		Payload: payload,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if _, err = conn.Write(append(data, '\n')); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		t.Fatal("no response")
+	}
+
+	var resp Response
+	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	raw, err := json.Marshal(resp.Payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var result VaultSetResponse
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	return result
+}

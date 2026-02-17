@@ -57,6 +57,7 @@ trap 'rm -rf "$TEST_TMPDIR"' EXIT
 unset EXITBOX_PROJECT_KEY EXITBOX_WORKSPACE_NAME EXITBOX_WORKSPACE_SCOPE
 unset EXITBOX_AGENT EXITBOX_AUTO_RESUME EXITBOX_IPC_SOCKET EXITBOX_KEYBINDINGS
 unset EXITBOX_SESSION_NAME EXITBOX_RESUME_TOKEN EXITBOX_VAULT_ENABLED
+unset EXITBOX_VAULT_READONLY
 
 # Extract functions from the entrypoint using awk (handles nested braces)
 extract_func() {
@@ -738,6 +739,73 @@ test_vault_instructions_present_when_enabled
 test_vault_instructions_contain_security_rules
 test_vault_instructions_contain_usage_pattern
 test_vault_instructions_contain_redacted
+
+test_vault_readonly_no_set_command() {
+    local result
+    result="$(EXITBOX_VAULT_ENABLED=true EXITBOX_VAULT_READONLY=true; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"exitbox-vault set"* ]]; then
+        ((FAIL++))
+        ERRORS+=("FAIL: read-only vault instructions should not contain 'exitbox-vault set'")
+    else
+        ((PASS++))
+    fi
+}
+
+test_vault_readonly_contains_readonly_note() {
+    local result
+    result="$(EXITBOX_VAULT_ENABLED=true EXITBOX_VAULT_READONLY=true; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"read-only"* && "$result" == *"cannot store new secrets"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: read-only vault instructions should contain read-only note about not storing secrets")
+    fi
+}
+
+test_vault_readwrite_has_set_command() {
+    local result
+    result="$(EXITBOX_VAULT_ENABLED=true; unset EXITBOX_VAULT_READONLY; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"exitbox-vault set"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: read-write vault instructions should contain 'exitbox-vault set'")
+    fi
+}
+
+test_vault_readonly_no_set_command
+test_vault_readonly_contains_readonly_note
+test_vault_readwrite_has_set_command
+
+# Extract inject_sandbox_instructions function for re-injection tests.
+INJECT_FUNC="$(awk '/^inject_sandbox_instructions\(\)/,/^}/' "$ENTRYPOINT")"
+
+test_vault_block_no_duplicates_on_reinject() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    mkdir -p "$tmpdir/.claude"
+    echo "# Existing content" > "$tmpdir/.claude/CLAUDE.md"
+
+    # Build SANDBOX_INSTRUCTIONS with vault enabled.
+    EXITBOX_VAULT_ENABLED=true eval "$SANDBOX_BLOCK"
+
+    # Define the inject function in this shell, then call it twice.
+    eval "$INJECT_FUNC"
+    AGENT="claude" HOME="$tmpdir" inject_sandbox_instructions
+    AGENT="claude" HOME="$tmpdir" inject_sandbox_instructions
+
+    local count
+    count=$(grep -c "BEGIN-EXITBOX-VAULT" "$tmpdir/.claude/CLAUDE.md")
+    if [[ "$count" -eq 1 ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: vault block should appear exactly once after re-injection, got $count")
+    fi
+    rm -rf "$tmpdir"
+}
+
+test_vault_block_no_duplicates_on_reinject
 
 # ============================================================================
 # Results

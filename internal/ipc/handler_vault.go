@@ -38,16 +38,21 @@ type VaultHandlerConfig struct {
 	PromptPasswordFunc func() (string, error)
 	// PromptApproveFunc overrides the tmux popup approval prompt for testing.
 	PromptApproveFunc func(key string) (bool, error)
+	// PromptApproveSetFunc overrides the tmux popup approval prompt for vault set.
+	PromptApproveSetFunc func(key string) (bool, error)
 	// OpenFunc overrides vault.Open for testing.
 	OpenFunc func(workspace, password string) (map[string]string, error)
+	// QuickSetFunc overrides vault write for testing. Called with (workspace, password, key, value).
+	QuickSetFunc func(workspace, password, key, value string) error
 }
 
 // VaultState holds the decrypted vault store in memory between IPC requests.
 // After the first successful password entry, the store is cached so subsequent
 // requests don't require re-entering the password.
 type VaultState struct {
-	mu    sync.Mutex
-	store map[string]string // nil = not yet unlocked
+	mu       sync.Mutex
+	store    map[string]string // nil = not yet unlocked
+	password string            // cached after first unlock for write operations
 }
 
 // Cleanup resets the in-memory vault state.
@@ -55,6 +60,7 @@ func (vs *VaultState) Cleanup() {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 	vs.store = nil
+	vs.password = ""
 }
 
 // NewVaultGetHandler returns a HandlerFunc for "vault_get" requests.
@@ -159,6 +165,105 @@ func NewVaultListHandler(cfg VaultHandlerConfig, state *VaultState) HandlerFunc 
 	}
 }
 
+// isValidVaultKey checks that a key is non-empty and contains only
+// alphanumeric characters and underscores.
+func isValidVaultKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, c := range key {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// quickSetVault opens the vault, sets a single key, and closes it.
+func quickSetVault(workspace, password, key, value string) error {
+	s, err := vault.Open(workspace, password)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	return s.Set(key, value)
+}
+
+// NewVaultSetHandler returns a HandlerFunc for "vault_set" requests.
+func NewVaultSetHandler(cfg VaultHandlerConfig, state *VaultState) HandlerFunc {
+	promptApprove := cfg.PromptApproveSetFunc
+	if promptApprove == nil {
+		promptApprove = func(key string) (bool, error) {
+			return promptVaultApprovalSet(cfg.Runtime, cfg.ContainerName, key)
+		}
+	}
+
+	promptPassword := cfg.PromptPasswordFunc
+	if promptPassword == nil {
+		promptPassword = func() (string, error) {
+			return promptVaultPassword(cfg.Runtime, cfg.ContainerName)
+		}
+	}
+
+	openFn := cfg.OpenFunc
+	if openFn == nil {
+		openFn = openVaultAsMap
+	}
+
+	setFn := cfg.QuickSetFunc
+	if setFn == nil {
+		setFn = quickSetVault
+	}
+
+	return func(req *Request) (interface{}, error) {
+		var payload VaultSetRequest
+		if err := json.Unmarshal(req.Payload, &payload); err != nil {
+			return VaultSetResponse{Error: "invalid payload"}, nil
+		}
+
+		key := strings.TrimSpace(payload.Key)
+		if !isValidVaultKey(key) {
+			return VaultSetResponse{Error: "invalid key: must be non-empty and contain only alphanumeric characters and underscores"}, nil
+		}
+
+		value := payload.Value
+		if value == "" {
+			return VaultSetResponse{Error: "empty value"}, nil
+		}
+
+		// Prompt user for approval.
+		approved, err := promptApprove(key)
+		if err != nil {
+			return VaultSetResponse{Error: fmt.Sprintf("approval prompt failed: %v", err)}, nil
+		}
+		if !approved {
+			return VaultSetResponse{Approved: false}, nil
+		}
+
+		// Ensure vault is unlocked.
+		_, err = ensureUnlocked(state, cfg.WorkspaceName, promptPassword, openFn)
+		if err != nil {
+			return VaultSetResponse{Error: fmt.Sprintf("vault unlock failed: %v", err)}, nil
+		}
+
+		// Write to vault.
+		state.mu.Lock()
+		password := state.password
+		state.mu.Unlock()
+
+		if err := setFn(cfg.WorkspaceName, password, key, value); err != nil {
+			return VaultSetResponse{Error: fmt.Sprintf("vault write failed: %v", err)}, nil
+		}
+
+		// Update in-memory cache.
+		state.mu.Lock()
+		state.store[key] = value
+		state.mu.Unlock()
+
+		return VaultSetResponse{Approved: true}, nil
+	}
+}
+
 // ensureUnlocked returns the decrypted store, prompting for password if needed.
 func ensureUnlocked(
 	state *VaultState,
@@ -184,6 +289,7 @@ func ensureUnlocked(
 	}
 
 	state.store = store
+	state.password = password
 	return store, nil
 }
 
@@ -264,6 +370,39 @@ func promptVaultApproval(rt container.Runtime, containerName, key string) (bool,
 	safeKey := sanitizeForShell(key)
 
 	script := `printf '\n  \033[1;33m[ExitBox Vault]\033[0m Allow secret read?\n\n  Key: \033[1m` +
+		safeKey +
+		`\033[0m\n\n  [y/N]: '; read ans; [ "$ans" = "y" ] || [ "$ans" = "yes" ]`
+
+	c := exec.Command(cmd, "exec", containerName,
+		"tmux", "display-popup", "-E", "-w", "55", "-h", "9",
+		"sh", "-c", script,
+	)
+
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
+	err := c.Run()
+
+	if err == nil {
+		return true, nil
+	}
+
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		if stderr.Len() == 0 {
+			return false, nil
+		}
+		return false, fmt.Errorf("popup failed (exit %d): %s", exitErr.ExitCode(), stderr.String())
+	}
+
+	return false, fmt.Errorf("popup exec failed: %w", err)
+}
+
+// promptVaultApprovalSet shows a tmux popup for approving secret write.
+func promptVaultApprovalSet(rt container.Runtime, containerName, key string) (bool, error) {
+	cmd := container.Cmd(rt)
+
+	safeKey := sanitizeForShell(key)
+
+	script := `printf '\n  \033[1;33m[ExitBox Vault]\033[0m Allow secret write?\n\n  Key: \033[1m` +
 		safeKey +
 		`\033[0m\n\n  [y/N]: '; read ans; [ "$ans" = "y" ] || [ "$ans" = "yes" ]`
 

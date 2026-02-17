@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
 
 func TestAllDomains_Basic(t *testing.T) {
 	al := &Allowlist{
@@ -169,5 +173,47 @@ func TestDefaultAllowlist(t *testing.T) {
 		if !domainSet[d] {
 			t.Errorf("default allowlist missing critical domain: %s", d)
 		}
+	}
+}
+
+func TestVaultConfig_YAMLRoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    VaultConfig
+		wantYAML string
+	}{
+		{
+			name:     "enabled read-write",
+			input:    VaultConfig{Enabled: true},
+			wantYAML: "enabled: true\n",
+		},
+		{
+			name:     "enabled read-only",
+			input:    VaultConfig{Enabled: true, ReadOnly: true},
+			wantYAML: "enabled: true\nread_only: true\n",
+		},
+		{
+			name:     "disabled",
+			input:    VaultConfig{},
+			wantYAML: "enabled: false\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := yaml.Marshal(tt.input)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(data) != tt.wantYAML {
+				t.Errorf("Marshal = %q, want %q", string(data), tt.wantYAML)
+			}
+			var got VaultConfig
+			if err := yaml.Unmarshal(data, &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if got != tt.input {
+				t.Errorf("round-trip: got %+v, want %+v", got, tt.input)
+			}
+		})
 	}
 }

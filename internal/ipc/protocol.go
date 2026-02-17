@@ -64,3 +64,15 @@ type VaultListResponse struct {
 	Approved bool     `json:"approved"`
 	Error    string   `json:"error,omitempty"`
 }
+
+// VaultSetRequest is the payload for "vault_set" requests.
+type VaultSetRequest struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// VaultSetResponse is the payload for "vault_set" responses.
+type VaultSetResponse struct {
+	Approved bool   `json:"approved"`
+	Error    string `json:"error,omitempty"`
+}

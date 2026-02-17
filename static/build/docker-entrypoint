@@ -807,59 +807,131 @@ You are running inside an ExitBox sandboxed container. Important constraints:
 
 # Append vault-specific instructions when vault is enabled.
 if [[ "${EXITBOX_VAULT_ENABLED:-}" == "true" ]]; then
-    SANDBOX_INSTRUCTIONS="${SANDBOX_INSTRUCTIONS}
+    if [[ "${EXITBOX_VAULT_READONLY:-}" == "true" ]]; then
+        SANDBOX_INSTRUCTIONS="${SANDBOX_INSTRUCTIONS}
+<!-- BEGIN-EXITBOX-VAULT -->
+# Vault-Secured Secrets (Read-Only)
+
+Encrypted vault (AES-256 + Argon2id) for secret management. All \`.env\` files
+are masked — secrets are ONLY accessible through vault IPC commands.
+
+This vault is read-only. You cannot store new secrets. Ask the host user to add
+secrets via \`exitbox vault set\` on the host.
+
+## Commands
+
+\`\`\`bash
+exitbox-vault list                    # List key names
+exitbox-vault get <KEY>               # Get a secret value (stdout)
+exitbox-vault env                     # Print all KEY=VALUE pairs
+\`\`\`
+
+## Rules — MANDATORY
+
+1. **Use secrets via variables only.** Fetch into a shell variable, use inline:
+   \`\`\`bash
+   TOKEN=\$(exitbox-vault get MY_TOKEN)
+   curl -H \"Authorization: Bearer \$TOKEN\" https://api.example.com
+   \`\`\`
+   When showing commands to the user, ALWAYS redact:
+   \`curl -H \"Authorization: Bearer <redacted>\" ...\`
+
+2. **ALWAYS redact command output.** When you have used \`exitbox-vault get\` in
+   a session, you MUST assume ANY subsequent command output could contain the
+   secret. NEVER run bare commands that print to stdout. ALWAYS capture output
+   into a variable and redact ALL vault secrets before displaying:
+   \`\`\`bash
+   TOKEN=\$(exitbox-vault get MY_TOKEN)
+   RESP=\$(curl -s -H \"Authorization: Bearer \$TOKEN\" http://example.com 2>&1)
+   echo \"\$RESP\" | sed \"s/\$TOKEN/<redacted>/g\"
+   \`\`\`
+   This applies to curl, wget, API calls, server responses, logs, and ANY
+   command whose output you have not personally verified is secret-free.
+
+3. **Never expose secrets.** NEVER print, log, echo, inline, or display secret
+   values anywhere — tool args, tool output, code, comments, commits, or response
+   text. Always show \`<redacted>\`. Use \`\$VAR\` expansion, never literal values.
+
+4. **Never persist secrets.** NEVER commit secrets to version control. Never
+   write secrets to files on disk (no temp files, no .env copies, no config files).
+
+5. **Fetch, don't ask.** When the user says \"use my API key\", fetch it via
+   \`exitbox-vault get <KEY>\`, don't ask them to paste it.
+
+6. **When in doubt, redact.** If unsure whether a value is sensitive, treat it
+   as sensitive.
+
+The host user will see an approval popup for each vault read. Wait for
+approval before proceeding. If denied, inform the user and do not retry.
+<!-- END-EXITBOX-VAULT -->
+"
+    else
+        SANDBOX_INSTRUCTIONS="${SANDBOX_INSTRUCTIONS}
 <!-- BEGIN-EXITBOX-VAULT -->
 # Vault-Secured Secrets
 
-This workspace uses an encrypted vault (AES-256 + Argon2id) for secret management.
-All \`.env\` files are masked inside the container — secrets are ONLY accessible
-through the vault IPC commands below.
+Encrypted vault (AES-256 + Argon2id) for secret management. All \`.env\` files
+are masked — secrets are ONLY accessible through vault IPC commands.
 
-## Accessing Secrets
+## Commands
 
-Use the vault commands to retrieve secrets. The host user will be prompted to
-approve each access request via a popup.
+\`\`\`bash
+exitbox-vault list                    # List key names
+exitbox-vault get <KEY>               # Get a secret value (stdout)
+exitbox-vault set <KEY> <VALUE>       # Store a secret (host approval required)
+exitbox-vault env                     # Print all KEY=VALUE pairs
+\`\`\`
 
-  \`\`\`bash
-  exitbox-vault list                    # List available secret key names
-  exitbox-vault get <KEY>               # Get a specific secret value (stdout)
-  exitbox-vault env                     # Print all KEY=VALUE pairs
-  \`\`\`
+## Rules — MANDATORY
 
-## Usage Patterns
+1. **Ask before storing.** When you detect a secret or are asked to generate one,
+   ask the user for a key name FIRST. NEVER guess a default name. WAIT for their
+   response before running \`exitbox-vault set\`.
 
-When the user asks you to use a specific secret (e.g. an API key, token, or
-credential) by name, follow this pattern:
-
-1. Fetch the secret value into a variable (NEVER display it):
+2. **Generate secrets safely.** NEVER run a command that prints a secret to stdout.
+   Generate and store in one step:
    \`\`\`bash
-   TOKEN=\$(exitbox-vault get GITHUB_TOKEN)
+   exitbox-vault set <KEY> \"\$(python3 -c \"import secrets; print(secrets.token_urlsafe(32))\")\"
    \`\`\`
-2. Use it directly in the command that needs it (e.g. API call):
+
+3. **Use secrets via variables only.** Fetch into a shell variable, use inline:
    \`\`\`bash
-   curl -H \"Authorization: Bearer \$TOKEN\" https://api.github.com/user
+   TOKEN=\$(exitbox-vault get MY_TOKEN)
+   curl -H \"Authorization: Bearer \$TOKEN\" https://api.example.com
    \`\`\`
-3. When showing the command to the user, ALWAYS redact the value:
+   When showing commands to the user, ALWAYS redact:
+   \`curl -H \"Authorization: Bearer <redacted>\" ...\`
+
+4. **ALWAYS redact command output.** When you have used \`exitbox-vault get\` in
+   a session, you MUST assume ANY subsequent command output could contain the
+   secret. NEVER run bare commands that print to stdout. ALWAYS capture output
+   into a variable and redact ALL vault secrets before displaying:
+   \`\`\`bash
+   TOKEN=\$(exitbox-vault get MY_TOKEN)
+   RESP=\$(curl -s -H \"Authorization: Bearer \$TOKEN\" http://example.com 2>&1)
+   echo \"\$RESP\" | sed \"s/\$TOKEN/<redacted>/g\"
    \`\`\`
-   curl -H \"Authorization: Bearer <redacted>\" https://api.github.com/user
-   \`\`\`
+   This applies to curl, wget, API calls, server responses, logs, and ANY
+   command whose output you have not personally verified is secret-free.
 
-The host user will see an approval popup for each secret read. Wait for
-approval before proceeding. If denied, inform the user.
+5. **Never expose secrets.** NEVER print, log, echo, inline, or display secret
+   values anywhere — tool args, tool output, code, comments, commits, or response
+   text. Always show \`<redacted>\`. Use \`\$VAR\` expansion, never literal values.
 
-## Security Rules
+6. **Never persist secrets.** NEVER commit secrets to version control. Never
+   write secrets to files on disk (no temp files, no .env copies, no config files).
 
-- CRITICAL: NEVER print, log, echo, or display secret values in output or files.
-  Always show \`<redacted>\` in place of any secret value in your responses.
-- NEVER commit secrets to version control.
-- NEVER write secrets to disk (no temp files, no .env copies).
-- Use secrets ONLY in-memory for API calls, environment variables, or direct usage.
-- When the user says \"use my API key\" or \"use the token\", always fetch it via
-  \`exitbox-vault get <KEY>\` rather than asking the user to paste it.
-- When displaying command output that contains secret values, replace them with
-  \`<redacted>\` before showing to the user.
+7. **Fetch, don't ask.** When the user says \"use my API key\", fetch it via
+   \`exitbox-vault get <KEY>\`, don't ask them to paste it.
+
+8. **When in doubt, redact.** If unsure whether a value is sensitive, treat it
+   as sensitive.
+
+The host user will see an approval popup for each vault read/write. Wait for
+approval before proceeding. If denied, inform the user and do not retry.
 <!-- END-EXITBOX-VAULT -->
 "
+    fi
 fi
 
 inject_sandbox_instructions() {
@@ -890,6 +962,10 @@ inject_sandbox_instructions() {
         elif grep -q "# ExitBox Sandbox Environment" "$target" 2>/dev/null; then
             # Legacy format: remove from header through trailing blank lines.
             sed -i '/^# ExitBox Sandbox Environment$/,/^[[:space:]]*$/d' "$target"
+        fi
+        # Remove any existing vault blocks from previous runs.
+        if grep -q "BEGIN-EXITBOX-VAULT" "$target" 2>/dev/null; then
+            sed -i '/<!-- BEGIN-EXITBOX-VAULT -->/,/<!-- END-EXITBOX-VAULT -->/d' "$target"
         fi
         printf '\n%s' "$SANDBOX_INSTRUCTIONS" >> "$target"
     else

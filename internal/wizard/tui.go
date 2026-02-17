@@ -68,6 +68,7 @@ type State struct {
 	DomainCategories    []domainCategory  // editable allowlist categories
 	CopyFrom            string            // workspace to copy credentials from (empty = none)
 	VaultEnabled        bool              // enable encrypted vault for secrets
+	VaultReadOnly       bool              // vault is read-only (agents cannot store new secrets)
 	VaultPassword       string            // vault encryption password (set during wizard init)
 	Keybindings         map[string]string // configurable keybindings (e.g. "workspace_menu" -> "C-M-p")
 }
@@ -122,10 +123,11 @@ type Model struct {
 	kbEditErr     string            // validation error message
 
 	// Vault step: 0=choice, 1=password, 2=confirm
-	vaultPhase    int
-	vaultPwInput  string // password being typed
+	vaultPhase     int
+	vaultPwInput   string // password being typed
 	vaultPwConfirm string // confirmation password
-	vaultPwErr    string // mismatch/empty error
+	vaultPwErr     string // mismatch/empty error
+	vaultExisting  bool   // true when editing a workspace that already has vault enabled
 }
 
 // stepInfo describes a wizard step for sidebar display.
@@ -340,7 +342,17 @@ func NewModelFromConfig(cfg *config.Config) Model {
 		kb.SessionMenu = cfg.Settings.Keybindings.SessionMenu
 	}
 
-	return Model{
+	// Pre-populate vault state from active workspace.
+	var vaultEnabled, vaultReadOnly bool
+	for _, w := range cfg.Workspaces.Items {
+		if w.Name == activeWorkspaceName {
+			vaultEnabled = w.Vault.Enabled
+			vaultReadOnly = w.Vault.ReadOnly
+			break
+		}
+	}
+
+	m := Model{
 		step:             startStep,
 		cursor:           activeCursor,
 		checked:          checked,
@@ -358,6 +370,10 @@ func NewModelFromConfig(cfg *config.Config) Model {
 			"session_menu":   kb.SessionMenu,
 		},
 	}
+	m.state.VaultEnabled = vaultEnabled
+	m.state.VaultReadOnly = vaultReadOnly
+	m.vaultExisting = vaultEnabled
+	return m
 }
 
 // NewWorkspaceModelFromConfig creates a blank wizard model for creating one workspace.
@@ -716,6 +732,11 @@ func (m Model) updateWorkspaceSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				// Only check "make default" if this workspace is already the default.
 				m.checked["setting:make_default"] = ws.Name == m.defaultWorkspace
+
+				// Re-populate vault state from this workspace.
+				m.state.VaultEnabled = ws.Vault.Enabled
+				m.state.VaultReadOnly = ws.Vault.ReadOnly
+				m.vaultExisting = ws.Vault.Enabled
 			} else {
 				// "Create new workspace" — start with a clean slate
 				m.workspaceInput = ""
@@ -745,6 +766,12 @@ func (m Model) updateWorkspaceSelect(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.checked["setting:auto_resume"] = false
 				m.checked["setting:pass_env"] = true
 				m.checked["setting:read_only"] = false
+
+				// Reset vault state for new workspace.
+				m.state.VaultEnabled = false
+				m.state.VaultReadOnly = false
+				m.state.VaultPassword = ""
+				m.vaultExisting = false
 			}
 			m.step = stepRole
 			m.cursor = 0
@@ -1560,32 +1587,86 @@ func (m Model) updateVault(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateVaultChoice(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch key.String() {
-	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
+	if m.vaultExisting {
+		// Vault already enabled: 4 options
+		// 0=Change password, 1=Mode toggle, 2=Disable, 3=Keep current
+		maxCursor := 3
+		switch key.String() {
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < maxCursor {
+				m.cursor++
+			}
+		case " ", "x":
+			if m.cursor == 1 {
+				m.state.VaultReadOnly = !m.state.VaultReadOnly
+			}
+		case "enter":
+			switch m.cursor {
+			case 0: // Change vault password
+				m.vaultPhase = 1
+				m.vaultPwInput = ""
+				m.vaultPwErr = ""
+			case 1: // Mode toggle — just toggle, don't advance
+				m.state.VaultReadOnly = !m.state.VaultReadOnly
+			case 2: // Disable vault
+				m.state.VaultEnabled = false
+				m.state.VaultReadOnly = false
+				m.state.VaultPassword = ""
+				m.vaultExisting = false
+				m.visitedSteps[stepVault] = true
+				m = m.collectAllStepState()
+				m.step = stepReview
+				m.cursor = 0
+			case 3: // Keep current settings
+				m.visitedSteps[stepVault] = true
+				m = m.collectAllStepState()
+				m.step = stepReview
+				m.cursor = 0
+			}
+		case "esc":
+			m = m.vaultGoBack()
 		}
-	case "down", "j":
-		if m.cursor < 1 {
-			m.cursor++
+	} else {
+		// Vault not enabled: 3 options
+		// 0=Enable (read & write), 1=Enable (read-only), 2=Skip
+		maxCursor := 2
+		switch key.String() {
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < maxCursor {
+				m.cursor++
+			}
+		case "enter":
+			switch m.cursor {
+			case 0: // Enable (read & write)
+				m.state.VaultReadOnly = false
+				m.vaultPhase = 1
+				m.vaultPwInput = ""
+				m.vaultPwErr = ""
+			case 1: // Enable (read-only)
+				m.state.VaultReadOnly = true
+				m.vaultPhase = 1
+				m.vaultPwInput = ""
+				m.vaultPwErr = ""
+			case 2: // Skip
+				m.state.VaultEnabled = false
+				m.state.VaultReadOnly = false
+				m.state.VaultPassword = ""
+				m.visitedSteps[stepVault] = true
+				m = m.collectAllStepState()
+				m.step = stepReview
+				m.cursor = 0
+			}
+		case "esc":
+			m = m.vaultGoBack()
 		}
-	case "enter":
-		if m.cursor == 0 {
-			// Enable vault → enter password
-			m.vaultPhase = 1
-			m.vaultPwInput = ""
-			m.vaultPwErr = ""
-		} else {
-			// Skip vault
-			m.state.VaultEnabled = false
-			m.state.VaultPassword = ""
-			m.visitedSteps[stepVault] = true
-			m = m.collectAllStepState()
-			m.step = stepReview
-			m.cursor = 0
-		}
-	case "esc":
-		m = m.vaultGoBack()
 	}
 	return m, nil
 }
@@ -1689,32 +1770,81 @@ func (m Model) viewVault() string {
 
 	switch m.vaultPhase {
 	case 0:
-		b.WriteString(subtitleStyle.Render("Encrypt secrets (API keys, tokens, credentials) in an encrypted vault."))
-		b.WriteString("\n")
-		b.WriteString(subtitleStyle.Render("Agents request secrets by name; each read shows an approval popup."))
-		b.WriteString("\n\n")
-		b.WriteString(dimStyle.Render("  How it works:"))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  1. Your secrets are stored encrypted on disk (AES-256 + Argon2id)"))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  2. First access in a session prompts for the vault password"))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  3. Each secret read shows a y/n approval popup"))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  4. .env files are masked (hidden) inside the container"))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  5. Agents use: exitbox-vault get <KEY> to fetch secrets"))
-		b.WriteString("\n\n")
+		if m.vaultExisting {
+			// Vault is already enabled — show management options.
+			b.WriteString(subtitleStyle.Render("Vault is currently enabled for this workspace."))
+			b.WriteString("\n\n")
 
-		options := []string{"Enable vault (set password now)", "Skip (use .env files directly)"}
-		for i, opt := range options {
-			cursor := "  "
-			if m.cursor == i {
-				cursor = cursorStyle.Render("> ")
+			type vaultOption struct {
+				label string
+				desc  string
 			}
-			b.WriteString(fmt.Sprintf("%s%s\n", cursor, opt))
+			rwCheck := "( )"
+			roCheck := "( )"
+			if m.state.VaultReadOnly {
+				roCheck = selectedStyle.Render("(•)")
+			} else {
+				rwCheck = selectedStyle.Render("(•)")
+			}
+			modeLabel := fmt.Sprintf("Mode: %s Read & write  %s Read-only", rwCheck, roCheck)
+
+			options := []vaultOption{
+				{"Change vault password", ""},
+				{modeLabel, "Space to toggle"},
+				{"Disable vault", ""},
+				{"Keep current settings", ""},
+			}
+			for i, opt := range options {
+				cursor := "  "
+				if m.cursor == i {
+					cursor = cursorStyle.Render("> ")
+				}
+				line := opt.label
+				if m.cursor == i && opt.label != modeLabel {
+					line = selectedStyle.Render(opt.label)
+				}
+				if opt.desc != "" {
+					line += "  " + dimStyle.Render(opt.desc)
+				}
+				b.WriteString(fmt.Sprintf("%s%s\n", cursor, line))
+			}
+		} else {
+			// Vault not enabled — show enable/skip options.
+			b.WriteString(subtitleStyle.Render("Encrypt secrets (API keys, tokens, credentials) in an encrypted vault."))
+			b.WriteString("\n")
+			b.WriteString(subtitleStyle.Render("Agents request secrets by name; each read shows an approval popup."))
+			b.WriteString("\n\n")
+			b.WriteString(dimStyle.Render("  How it works:"))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  1. Your secrets are stored encrypted on disk (AES-256 + Argon2id)"))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  2. First access in a session prompts for the vault password"))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  3. Each secret read shows a y/n approval popup"))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  4. .env files are masked (hidden) inside the container"))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render("  5. Agents use: exitbox-vault get <KEY> to fetch secrets"))
+			b.WriteString("\n\n")
+
+			options := []string{
+				"Enable vault — read & write (agents can read and store secrets)",
+				"Enable vault — read-only (agents can only read secrets)",
+				"Skip (use .env files directly)",
+			}
+			for i, opt := range options {
+				cursor := "  "
+				if m.cursor == i {
+					cursor = cursorStyle.Render("> ")
+				}
+				b.WriteString(fmt.Sprintf("%s%s\n", cursor, opt))
+			}
 		}
-		b.WriteString(helpStyle.Render("\nUp/Down to move, Enter to confirm, Esc to go back"))
+		if m.vaultExisting {
+			b.WriteString(helpStyle.Render("\nUp/Down to move, Space to toggle mode, Enter to confirm, Esc to go back"))
+		} else {
+			b.WriteString(helpStyle.Render("\nUp/Down to move, Enter to confirm, Esc to go back"))
+		}
 
 	case 1:
 		b.WriteString(subtitleStyle.Render("Choose a password to encrypt the vault."))
@@ -2351,7 +2481,11 @@ func (m Model) viewReview() string {
 	b.WriteString(fmt.Sprintf("  Read-only:    %s\n", readOnlyStr))
 	vaultStr := dimStyle.Render("no (.env files)")
 	if m.state.VaultEnabled {
-		vaultStr = successStyle.Render("yes (encrypted, password set)")
+		if m.state.VaultReadOnly {
+			vaultStr = successStyle.Render("yes (encrypted, read-only)")
+		} else {
+			vaultStr = successStyle.Render("yes (encrypted, read & write)")
+		}
 	}
 	b.WriteString(fmt.Sprintf("  Vault:        %s\n", vaultStr))
 
@@ -2480,7 +2614,11 @@ func (m Model) viewWorkspaceOnlyReview() string {
 
 	vaultStr := dimStyle.Render("no (.env files)")
 	if m.state.VaultEnabled {
-		vaultStr = successStyle.Render("yes (encrypted, password set)")
+		if m.state.VaultReadOnly {
+			vaultStr = successStyle.Render("yes (encrypted, read-only)")
+		} else {
+			vaultStr = successStyle.Render("yes (encrypted, read & write)")
+		}
 	}
 	b.WriteString(fmt.Sprintf("  Vault:        %s\n", vaultStr))
 
