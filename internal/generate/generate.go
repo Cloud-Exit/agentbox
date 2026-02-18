@@ -36,6 +36,7 @@ type ServerConfig struct {
 	ModelID      string // e.g. "qwen3.5-397b"
 	ModelName    string // e.g. "Qwen3.5-397B-A17B"
 	VaultKeyName string // non-empty when key is stored in vault
+	Compaction   bool   // OpenCode: enable auto compaction with pruning
 }
 
 // ModelInfo describes a model returned by the /models endpoint.
@@ -86,7 +87,7 @@ func TestServer(baseURL, apiKey string) ([]ModelInfo, error) {
 
 // GenerateOpenCode produces an OpenCode config map.
 func GenerateOpenCode(cfg ServerConfig) map[string]interface{} {
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"$schema": "https://opencode.ai/config.json",
 		"provider": map[string]interface{}{
 			cfg.ProviderID: map[string]interface{}{
@@ -104,6 +105,13 @@ func GenerateOpenCode(cfg ServerConfig) map[string]interface{} {
 		},
 		"model": cfg.ProviderID + "/" + cfg.ModelID,
 	}
+	if cfg.Compaction {
+		result["compaction"] = map[string]interface{}{
+			"auto":  true,
+			"prune": true,
+		}
+	}
+	return result
 }
 
 // GenerateClaude produces a Claude Code settings.json config map.

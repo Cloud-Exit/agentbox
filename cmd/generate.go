@@ -158,6 +158,11 @@ func runGenerate(agentName, displayName, workspaceFlag string) {
 		VaultKeyName: vaultKeyName,
 	}
 
+	// OpenCode-specific: ask about compaction.
+	if agentName == "opencode" {
+		serverCfg.Compaction = promptYesNo("Enable auto compaction with pruning?", true)
+	}
+
 	// Generate agent-specific config.
 	var configData map[string]interface{}
 	switch agentName {

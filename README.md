@@ -228,6 +228,7 @@ exitbox disable <agent>   # Disable an agent
 exitbox rebuild <agent>   # Force rebuild of agent image
 exitbox rebuild all       # Rebuild all enabled agents
 exitbox uninstall <agent> # Remove agent images and config
+exitbox update            # Update ExitBox to the latest version
 exitbox aliases           # Print shell aliases for ~/.bashrc
 ```
 

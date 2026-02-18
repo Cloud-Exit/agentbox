@@ -45,21 +45,23 @@ parse_keybindings() {
 parse_keybindings
 
 update_tmux_status() {
-    local display ws_name ver
+    local display ws_name ver session_name
     display="$(agent_display_name "$AGENT")"
     ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
     ver="${EXITBOX_VERSION:-dev}"
+    session_name="${EXITBOX_SESSION_NAME:-default}"
     tmux set -g status-left " ExitBox  ${display} " 2>/dev/null || true
-    tmux set -g window-status-current-format " Workspace: ${ws_name} " 2>/dev/null || true
+    tmux set -g window-status-current-format " Workspace: ${ws_name} | Session: ${session_name} " 2>/dev/null || true
     tmux set -g status-right " ${ver}  ${KB_WORKSPACE_MENU}: workspaces  ${KB_SESSION_MENU}: sessions " 2>/dev/null || true
 }
 
 write_tmux_conf() {
     local conf="/tmp/exitbox-tmux.conf"
-    local display ws_name ver
+    local display ws_name ver session_name
     display="$(agent_display_name "$AGENT")"
     ws_name="${EXITBOX_WORKSPACE_NAME:-default}"
     ver="${EXITBOX_VERSION:-dev}"
+    session_name="${EXITBOX_SESSION_NAME:-default}"
 
     cat > "$conf" <<TMUXEOF
 # ExitBox tmux configuration
@@ -72,7 +74,7 @@ set -g status-right " ${ver}  ${KB_WORKSPACE_MENU}: workspaces  ${KB_SESSION_MEN
 set -g status-right-length 90
 set -g status-justify centre
 set -g window-status-format ""
-set -g window-status-current-format " Workspace: ${ws_name} "
+set -g window-status-current-format " Workspace: ${ws_name} | Session: ${session_name} "
 set -g mouse on
 set -g history-limit 100000
 set -g pane-border-style "fg=colour236"

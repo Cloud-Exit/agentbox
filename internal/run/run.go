@@ -19,10 +19,12 @@ package run
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
@@ -31,6 +33,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/network"
 	"github.com/cloud-exit/exitbox/internal/profile"
 	"github.com/cloud-exit/exitbox/internal/project"
+	"github.com/cloud-exit/exitbox/internal/redactor"
 	"github.com/cloud-exit/exitbox/internal/ui"
 	"golang.org/x/term"
 )
@@ -360,11 +363,18 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 		ui.Debugf("Container run: %s run %s", cmd, strings.Join(args, " "))
 	}
 
-	// Run with inherited stdio
+	// Run with inherited stdio, filtering output through redactor if vault is enabled.
 	c := exec.Command(cmd, append([]string{"run"}, args...)...)
 	c.Stdin = os.Stdin
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
+
+	if vaultState != nil {
+		red := redactor.NewWithProvider(vaultState.GetRetrievedSecrets)
+		c.Stdout = &redactorWriter{w: os.Stdout, r: red}
+		c.Stderr = &redactorWriter{w: os.Stderr, r: red}
+	} else {
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+	}
 
 	err = c.Run()
 
@@ -417,6 +427,21 @@ func ollamaEnvVars(agent string) []string {
 		}
 	}
 	return nil
+}
+
+// redactorWriter wraps an io.Writer and filters output through a redactor.
+type redactorWriter struct {
+	w  io.Writer
+	r  *redactor.Redactor
+	mu sync.Mutex
+}
+
+func (rw *redactorWriter) Write(p []byte) (int, error) {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	filtered := rw.r.Filter(p)
+	_, err := rw.w.Write(filtered)
+	return len(p), err
 }
 
 func isReservedEnvVar(key string) bool {

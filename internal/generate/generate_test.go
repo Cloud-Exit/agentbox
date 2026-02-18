@@ -96,46 +96,85 @@ func TestTestServer(t *testing.T) {
 }
 
 func TestGenerateOpenCode(t *testing.T) {
-	cfg := ServerConfig{
-		ProviderID:   "local",
-		ProviderName: "Local Server",
-		BaseURL:      "http://localhost:8080/v1",
-		ModelID:      "qwen3",
-		ModelName:    "Qwen3",
-	}
+	t.Run("without compaction", func(t *testing.T) {
+		cfg := ServerConfig{
+			ProviderID:   "local",
+			ProviderName: "Local Server",
+			BaseURL:      "http://localhost:8080/v1",
+			ModelID:      "qwen3",
+			ModelName:    "Qwen3",
+		}
 
-	result := GenerateOpenCode(cfg)
+		result := GenerateOpenCode(cfg)
 
-	// Verify structure by marshaling to JSON and back.
-	data, err := json.Marshal(result)
-	if err != nil {
-		t.Fatalf("marshal error: %v", err)
-	}
+		data, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
 
-	var parsed map[string]interface{}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("unmarshal error: %v", err)
-	}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
 
-	if parsed["$schema"] != "https://opencode.ai/config.json" {
-		t.Error("missing or wrong $schema")
-	}
+		if parsed["$schema"] != "https://opencode.ai/config.json" {
+			t.Error("missing or wrong $schema")
+		}
 
-	providers, ok := parsed["provider"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing provider")
-	}
-	local, ok := providers["local"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing local provider")
-	}
-	if local["name"] != "Local Server" {
-		t.Errorf("expected Local Server, got %v", local["name"])
-	}
+		providers, ok := parsed["provider"].(map[string]interface{})
+		if !ok {
+			t.Fatal("missing provider")
+		}
+		local, ok := providers["local"].(map[string]interface{})
+		if !ok {
+			t.Fatal("missing local provider")
+		}
+		if local["name"] != "Local Server" {
+			t.Errorf("expected Local Server, got %v", local["name"])
+		}
 
-	if parsed["model"] != "local/qwen3" {
-		t.Errorf("expected local/qwen3, got %v", parsed["model"])
-	}
+		if parsed["model"] != "local/qwen3" {
+			t.Errorf("expected local/qwen3, got %v", parsed["model"])
+		}
+
+		if _, ok := parsed["compaction"]; ok {
+			t.Error("compaction should not be present when disabled")
+		}
+	})
+
+	t.Run("with compaction", func(t *testing.T) {
+		cfg := ServerConfig{
+			ProviderID:   "local",
+			ProviderName: "Local Server",
+			BaseURL:      "http://localhost:8080/v1",
+			ModelID:      "qwen3",
+			ModelName:    "Qwen3",
+			Compaction:   true,
+		}
+
+		result := GenerateOpenCode(cfg)
+
+		data, err := json.Marshal(result)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+
+		comp, ok := parsed["compaction"].(map[string]interface{})
+		if !ok {
+			t.Fatal("missing compaction")
+		}
+		if comp["auto"] != true {
+			t.Errorf("expected compaction.auto=true, got %v", comp["auto"])
+		}
+		if comp["prune"] != true {
+			t.Errorf("expected compaction.prune=true, got %v", comp["prune"])
+		}
+	})
 }
 
 func TestGenerateClaude(t *testing.T) {

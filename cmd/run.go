@@ -18,10 +18,12 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloud-exit/exitbox/internal/agent"
@@ -33,6 +35,7 @@ import (
 	"github.com/cloud-exit/exitbox/internal/run"
 	"github.com/cloud-exit/exitbox/internal/session"
 	"github.com/cloud-exit/exitbox/internal/ui"
+	"github.com/cloud-exit/exitbox/internal/update"
 	"github.com/spf13/cobra"
 )
 
@@ -200,6 +203,14 @@ func runAgent(agentName string, passthrough []string) {
 	switchFile := filepath.Join(projectDir, ".exitbox", "workspace-switch")
 	actionFile := filepath.Join(projectDir, ".exitbox", "session-action")
 
+	// Background update check: shows a tmux popup during the session if
+	// a newer version is available. If user approves, update runs after exit.
+	var wantUpdate atomic.Int32
+	var latestVersion atomic.Value
+	containerCmd := container.Cmd(rt)
+	containerName := project.ContainerName(agentName, projectDir)
+	update.RunUpdatePopup(containerCmd, containerName, Version, &wantUpdate, &latestVersion)
+
 	// Main run loop: re-launches on workspace switch.
 	for {
 		// Reload config each iteration (workspace switch updates it).
@@ -287,6 +298,19 @@ func runAgent(agentName string, passthrough []string) {
 					flags.Resume = true    // Auto-resume when switching workspaces
 					flags.ResumeToken = "" // Use stored token, not an explicit one
 					continue
+				}
+			}
+		}
+
+		// If the user approved an update via the tmux popup, apply it now.
+		if wantUpdate.Load() == 1 {
+			if latest, ok := latestVersion.Load().(string); ok && latest != "" {
+				fmt.Printf("\nUpdating ExitBox: v%s → v%s...\n", Version, latest)
+				url := update.BinaryURL(latest)
+				if err := update.DownloadAndReplace(url); err != nil {
+					ui.Warnf("Update failed: %v", err)
+				} else {
+					ui.Successf("ExitBox updated to v%s", latest)
 				}
 			}
 		}

@@ -17,11 +17,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/cloud-exit/exitbox/internal/config"
 	"github.com/cloud-exit/exitbox/internal/container"
 	"github.com/cloud-exit/exitbox/internal/ui"
+	"github.com/cloud-exit/exitbox/internal/update"
 	"github.com/spf13/cobra"
 )
 
@@ -72,15 +75,44 @@ var listCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Println("Commands:")
 		fmt.Println("  exitbox setup              Run the setup wizard")
-		fmt.Println("  exitbox <agent>            Run an agent (builds if needed)")
+		fmt.Println("  exitbox run <agent>        Run an agent (builds if needed)")
+		fmt.Println("  exitbox generate <agent>   Generate config for a third-party LLM server")
 		fmt.Println("  exitbox enable <agent>     Enable an agent")
 		fmt.Println("  exitbox disable <agent>    Disable an agent")
 		fmt.Println("  exitbox rebuild <agent>    Force rebuild of agent image")
 		fmt.Println("  exitbox rebuild all        Rebuild all enabled agents")
 		fmt.Println("  exitbox import <agent>     Import agent config from host")
+		fmt.Println("  exitbox workspaces         Manage workspaces")
+		fmt.Println("  exitbox sessions           Manage sessions")
+		fmt.Println("  exitbox vault              Manage vault secrets")
+		fmt.Println("  exitbox logs <agent>       View agent build logs")
+		fmt.Println("  exitbox info               Show system and project information")
 		fmt.Println("  exitbox uninstall [agent]  Uninstall exitbox or specific agent")
+		fmt.Println("  exitbox update             Update ExitBox to the latest version")
 		fmt.Println("  exitbox aliases            Print shell aliases")
 		fmt.Println()
+
+		// Non-blocking update check with a short timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		ch := make(chan string, 1)
+		go func() {
+			latest, err := update.GetLatestVersion()
+			if err == nil && update.IsNewer(Version, latest) {
+				ch <- latest
+			}
+			close(ch)
+		}()
+
+		select {
+		case latest, ok := <-ch:
+			if ok && latest != "" {
+				fmt.Printf("  %sUpdate available: v%s → v%s — run `exitbox update` to update.%s\n\n",
+					ui.Yellow, Version, latest, ui.NC)
+			}
+		case <-ctx.Done():
+		}
 	},
 }
 

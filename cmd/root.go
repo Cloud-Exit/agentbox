@@ -35,6 +35,7 @@ var skipWizardCommands = map[string]bool{
 	"version":    true,
 	"help":       true,
 	"completion": true,
+	"update":     true,
 }
 
 var rootCmd = &cobra.Command{

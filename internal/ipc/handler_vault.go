@@ -53,14 +53,39 @@ type VaultState struct {
 	mu       sync.Mutex
 	store    map[string]string // nil = not yet unlocked
 	password string            // cached after first unlock for write operations
+
+	// redactMu guards retrievedSecrets independently from mu.
+	// This prevents deadlock: GetRetrievedSecrets is called on every stdout
+	// write via the redactor, while mu may be held during blocking tmux popups
+	// in ensureUnlocked/promptPassword.
+	redactMu         sync.Mutex
+	retrievedSecrets map[string]string // value -> key name, for output redaction
 }
 
 // Cleanup resets the in-memory vault state.
 func (vs *VaultState) Cleanup() {
 	vs.mu.Lock()
-	defer vs.mu.Unlock()
 	vs.store = nil
 	vs.password = ""
+	vs.mu.Unlock()
+
+	vs.redactMu.Lock()
+	vs.retrievedSecrets = nil
+	vs.redactMu.Unlock()
+}
+
+// GetRetrievedSecrets returns a copy of the retrieved secrets map for redaction.
+func (vs *VaultState) GetRetrievedSecrets() map[string]string {
+	vs.redactMu.Lock()
+	defer vs.redactMu.Unlock()
+	if vs.retrievedSecrets == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(vs.retrievedSecrets))
+	for k, v := range vs.retrievedSecrets {
+		cp[k] = v
+	}
+	return cp
 }
 
 // NewVaultGetHandler returns a HandlerFunc for "vault_get" requests.
@@ -114,6 +139,14 @@ func NewVaultGetHandler(cfg VaultHandlerConfig, state *VaultState) HandlerFunc {
 		if !ok {
 			return VaultGetResponse{Error: fmt.Sprintf("key %q not found in vault", key)}, nil
 		}
+
+		// Cache the secret value for output redaction.
+		state.redactMu.Lock()
+		if state.retrievedSecrets == nil {
+			state.retrievedSecrets = make(map[string]string)
+		}
+		state.retrievedSecrets[val] = key
+		state.redactMu.Unlock()
 
 		return VaultGetResponse{Value: val, Approved: true}, nil
 	}
