@@ -77,6 +77,8 @@ set -g window-status-format ""
 set -g window-status-current-format " Workspace: ${ws_name} | Session: ${session_name} "
 set -g mouse on
 set -g history-limit 100000
+set -g aggressive-resize on
+set -g window-size latest
 set -g pane-border-style "fg=colour236"
 set -g pane-active-border-style "fg=colour236"
 set -g message-style "bg=colour236,fg=colour255"
@@ -806,17 +808,21 @@ setup_git_credential_helper() {
 }
 
 setup_ssh_proxy_tunnel() {
-    # When Full Git support is active (SSH_AUTH_SOCK set) and the firewall is
-    # active (http_proxy set), configure SSH to tunnel through the Squid HTTP
-    # proxy.  SSH normally uses port 22 which Squid blocks (CONNECT only on
-    # SSL_ports/443).  Major git hosts offer SSH on port 443:
+    # When the firewall is active (http_proxy set), configure SSH to tunnel
+    # through the Squid HTTP proxy. SSH normally uses port 22 which Squid
+    # blocks (CONNECT only on SSL_ports/443). Major git hosts offer SSH on
+    # port 443:
     #   - github.com    → ssh.github.com:443
     #   - gitlab.com    → altssh.gitlab.com:443
     #   - bitbucket.org → altssh.bitbucket.org:443
     #
+    # This runs regardless of SSH_AUTH_SOCK — even without agent forwarding,
+    # SSH needs proxy routing to reach git hosts through the firewall.
+    # Without this config, SSH fails with DNS resolution errors on the
+    # isolated internal network.
+    #
     # socat's PROXY address type speaks HTTP CONNECT, tunnelling the SSH
     # session through Squid on the allowed port.
-    [[ -z "${SSH_AUTH_SOCK:-}" ]] && return 0
     [[ -z "${http_proxy:-}" ]] && return 0
     command -v socat >/dev/null 2>&1 || return 0
 

@@ -1043,19 +1043,28 @@ echo "Testing SSH proxy tunnel setup..."
 
 SETUP_SSH_FUNC="$(extract_func setup_ssh_proxy_tunnel)"
 
-test_ssh_proxy_tunnel_skips_without_ssh_auth_sock() {
+test_ssh_proxy_tunnel_works_without_ssh_auth_sock() {
+    # SSH proxy tunnel should still be configured even without SSH_AUTH_SOCK.
+    # Without it, SSH fails with DNS errors on the isolated internal network.
+    if ! command -v socat >/dev/null 2>&1; then
+        ((PASS++))
+        return
+    fi
     local tmpdir
     tmpdir="$(mktemp -d)"
-    local result
-    result="$(
+    (
         export HOME="$tmpdir"
         unset SSH_AUTH_SOCK
         export http_proxy="http://172.18.0.2:3128"
         eval "$SETUP_SSH_FUNC"
         setup_ssh_proxy_tunnel
-        echo "ok"
-    )" 2>/dev/null
-    assert_file_missing "ssh tunnel skips without SSH_AUTH_SOCK" "$tmpdir/.ssh/config"
+    ) 2>/dev/null
+    if [[ -f "$tmpdir/.ssh/config" ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: ssh proxy tunnel should create config even without SSH_AUTH_SOCK")
+    fi
     rm -rf "$tmpdir"
 }
 
@@ -1065,7 +1074,6 @@ test_ssh_proxy_tunnel_skips_without_http_proxy() {
     local result
     result="$(
         export HOME="$tmpdir"
-        export SSH_AUTH_SOCK="/run/exitbox/ssh-agent.sock"
         unset http_proxy
         eval "$SETUP_SSH_FUNC"
         setup_ssh_proxy_tunnel
@@ -1215,7 +1223,7 @@ test_ssh_proxy_tunnel_strict_host_key_checking() {
     rm -rf "$tmpdir"
 }
 
-test_ssh_proxy_tunnel_skips_without_ssh_auth_sock
+test_ssh_proxy_tunnel_works_without_ssh_auth_sock
 test_ssh_proxy_tunnel_skips_without_http_proxy
 test_ssh_proxy_tunnel_creates_config
 test_ssh_proxy_tunnel_parses_proxy_without_port

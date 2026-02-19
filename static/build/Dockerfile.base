@@ -41,8 +41,8 @@ RUN --mount=type=cache,target=/var/cache/apk \
     bind-tools netcat-openbsd socat \
     # Terminal
     tmux \
-    # GNU libc compat (required for Rust binaries built against glibc)
-    libc6-compat
+    # GNU libc compat (required for glibc-linked binaries like rtk on musl Alpine)
+    gcompat
 
 # Install yq (architecture-aware, version-pinned, checksum-verified)
 RUN if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
