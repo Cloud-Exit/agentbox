@@ -90,6 +90,9 @@ func TestIsReservedEnvVar(t *testing.T) {
 		"EXITBOX_KEYBINDINGS",
 		"EXITBOX_VAULT_ENABLED",
 		"EXITBOX_VAULT_READONLY",
+		"EXITBOX_IDE_PORT",
+		"CLAUDE_CODE_SSE_PORT",
+		"ENABLE_IDE_INTEGRATION",
 		"TERM",
 		"http_proxy",
 		"https_proxy",
@@ -97,6 +100,7 @@ func TestIsReservedEnvVar(t *testing.T) {
 		"HTTPS_PROXY",
 		"no_proxy",
 		"NO_PROXY",
+		"SSH_AUTH_SOCK",
 	}
 	for _, key := range reserved {
 		if !isReservedEnvVar(key) {

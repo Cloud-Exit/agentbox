@@ -808,6 +808,140 @@ test_vault_block_no_duplicates_on_reinject() {
 test_vault_block_no_duplicates_on_reinject
 
 # ============================================================================
+# IDE relay guard-condition tests
+# ============================================================================
+echo ""
+echo "Testing IDE relay guard conditions..."
+
+IDE_RELAY_FUNC="$(extract_func start_ide_relay)"
+CLEANUP_IDE_FUNC="$(extract_func cleanup_ide_relay)"
+
+test_ide_relay_skips_non_claude() {
+    local result
+    result="$(
+        AGENT="codex"
+        ENABLE_IDE_INTEGRATION="true"
+        EXITBOX_IDE_PORT="12345"
+        IDE_RELAY_PID=""
+        eval "$IDE_RELAY_FUNC"
+        start_ide_relay
+        echo "PID=$IDE_RELAY_PID"
+    )" 2>/dev/null
+    assert_eq "ide_relay skips non-claude" "PID=" "$result"
+}
+
+test_ide_relay_skips_disabled() {
+    local result
+    result="$(
+        AGENT="claude"
+        unset ENABLE_IDE_INTEGRATION
+        EXITBOX_IDE_PORT="12345"
+        IDE_RELAY_PID=""
+        eval "$IDE_RELAY_FUNC"
+        start_ide_relay
+        echo "PID=$IDE_RELAY_PID"
+    )" 2>/dev/null
+    assert_eq "ide_relay skips when disabled" "PID=" "$result"
+}
+
+test_ide_relay_skips_no_port() {
+    local result
+    result="$(
+        AGENT="claude"
+        ENABLE_IDE_INTEGRATION="true"
+        unset EXITBOX_IDE_PORT
+        IDE_RELAY_PID=""
+        eval "$IDE_RELAY_FUNC"
+        start_ide_relay
+        echo "PID=$IDE_RELAY_PID"
+    )" 2>/dev/null
+    assert_eq "ide_relay skips when no port" "PID=" "$result"
+}
+
+test_ide_relay_skips_missing_socket() {
+    local result
+    result="$(
+        AGENT="claude"
+        ENABLE_IDE_INTEGRATION="true"
+        EXITBOX_IDE_PORT="12345"
+        IDE_RELAY_PID=""
+        eval "$IDE_RELAY_FUNC"
+        start_ide_relay
+        echo "PID=$IDE_RELAY_PID"
+    )" 2>/dev/null
+    assert_eq "ide_relay skips when socket missing" "PID=" "$result"
+}
+
+test_cleanup_ide_relay_noop() {
+    # cleanup should not fail when no relay PID is set
+    local result
+    result="$(
+        IDE_RELAY_PID=""
+        eval "$CLEANUP_IDE_FUNC"
+        cleanup_ide_relay
+        echo "ok"
+    )" 2>/dev/null
+    assert_eq "cleanup_ide_relay noop" "ok" "$result"
+}
+
+test_ide_relay_skips_non_claude
+test_ide_relay_skips_disabled
+test_ide_relay_skips_no_port
+test_ide_relay_skips_missing_socket
+test_cleanup_ide_relay_noop
+
+# ============================================================================
+# Git credential helper tests
+# ============================================================================
+echo ""
+echo "Testing git credential helper..."
+
+SETUP_GIT_FUNC="$(extract_func setup_git_credential_helper)"
+
+test_git_credential_helper_skips_without_gh() {
+    local result
+    result="$(
+        # Mock gh as not found
+        gh() { return 1; }
+        command() {
+            if [[ "$1" == "-v" && "$2" == "gh" ]]; then return 1; fi
+            builtin command "$@"
+        }
+        eval "$SETUP_GIT_FUNC"
+        setup_git_credential_helper
+        echo "ok"
+    )" 2>/dev/null
+    assert_eq "git_credential_helper skips without gh" "ok" "$result"
+}
+
+test_git_credential_helper_configures_with_gh() {
+    if ! command -v git >/dev/null 2>&1; then
+        ((PASS++))
+        return
+    fi
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    local result
+    result="$(
+        export HOME="$tmpdir"
+        # Mock gh as available
+        gh() { return 0; }
+        command() {
+            if [[ "$1" == "-v" && "$2" == "gh" ]]; then return 0; fi
+            builtin command "$@"
+        }
+        eval "$SETUP_GIT_FUNC"
+        setup_git_credential_helper
+        git config --global --get credential."https://github.com".helper
+    )" 2>/dev/null
+    assert_eq "git_credential_helper configures gh" '!gh auth git-credential' "$result"
+    rm -rf "$tmpdir"
+}
+
+test_git_credential_helper_skips_without_gh
+test_git_credential_helper_configures_with_gh
+
+# ============================================================================
 # Results
 # ============================================================================
 

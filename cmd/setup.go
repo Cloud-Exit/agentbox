@@ -89,6 +89,11 @@ func runSetup() error {
 		}
 	}
 
+	// Guide user to import gh token if GitHub CLI was selected.
+	if result.WorkspaceName != "" {
+		handleExternalToolSetup(result)
+	}
+
 	ui.Success("ExitBox configured!")
 	fmt.Println()
 	fmt.Println("Next steps:")
@@ -139,6 +144,26 @@ func handleCredentialSetup(workspaceName, copyFrom string) {
 			ui.Warnf("Failed to copy credentials from '%s': %v", copyFrom, err)
 		} else {
 			ui.Successf("Copied credentials from workspace '%s'", copyFrom)
+		}
+	}
+}
+
+// handleExternalToolSetup prints guidance for configuring external tools
+// selected during the wizard (e.g. importing a GitHub CLI token into the vault).
+func handleExternalToolSetup(result *wizard.SetupResult) {
+	cfg := config.LoadOrDefault()
+	for _, tool := range cfg.ExternalTools {
+		if tool == "GitHub CLI" {
+			if result.VaultEnabled {
+				ui.Infof("GitHub CLI selected. To use authenticated git/gh inside ExitBox:")
+				fmt.Println("  exitbox vault set GITHUB_TOKEN <your-token> -w " + result.WorkspaceName)
+				fmt.Println("  (inside the container, the token is available via: exitbox-vault get GITHUB_TOKEN)")
+				fmt.Println()
+			} else {
+				ui.Infof("GitHub CLI selected. To authenticate, pass GH_TOKEN as an env var:")
+				fmt.Println("  exitbox run claude -e GH_TOKEN=$GH_TOKEN")
+				fmt.Println()
+			}
 		}
 	}
 }

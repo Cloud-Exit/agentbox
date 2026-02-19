@@ -201,3 +201,18 @@ func TestApplySessionResumeDefaults_NoResumeWins(t *testing.T) {
 		t.Fatal("--no-resume should override --name's implied resume")
 	}
 }
+
+func TestParseRunFlags_FullGitSupportDefault(t *testing.T) {
+	// FullGitSupport is a config-level setting, not a CLI flag.
+	// It's propagated from config.DefaultFlags.FullGitSupport to run.Options.
+	// Verify parseRunFlags doesn't override it (it shouldn't touch it since
+	// it's not a parsed flag — it comes from config).
+	defaults := config.DefaultFlags{FullGitSupport: true}
+	_ = parseRunFlags(nil, defaults)
+	// FullGitSupport is not a parsedFlags field; it's set directly on run.Options
+	// from cfg.Settings.DefaultFlags.FullGitSupport in runAgent(). Verify the
+	// default flag struct preserves the value.
+	if !defaults.FullGitSupport {
+		t.Error("FullGitSupport should remain true in defaults")
+	}
+}

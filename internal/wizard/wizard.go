@@ -148,10 +148,11 @@ func applyResult(state State, existingCfg *config.Config) error {
 	cfg.Settings.AutoUpdate = state.AutoUpdate
 	cfg.Settings.StatusBar = state.StatusBar
 	cfg.Settings.DefaultFlags = config.DefaultFlags{
-		NoFirewall: !state.EnableFirewall,
-		AutoResume: state.AutoResume,
-		NoEnv:      !state.PassEnv,
-		ReadOnly:   state.ReadOnly,
+		NoFirewall:      !state.EnableFirewall,
+		AutoResume:      state.AutoResume,
+		NoEnv:           !state.PassEnv,
+		ReadOnly:        state.ReadOnly,
+		FullGitSupport:  state.FullGitSupport,
 	}
 
 	// Persist keybindings — only store non-default values (omitempty in YAML).
@@ -187,6 +188,19 @@ func applyResult(state State, existingCfg *config.Config) error {
 			Name:       b.Name,
 			URLPattern: b.URLPattern,
 		})
+	}
+
+	// Save external tool selections and add their packages.
+	cfg.ExternalTools = state.ExternalTools
+	existingPkgs := make(map[string]bool, len(cfg.Tools.User))
+	for _, p := range cfg.Tools.User {
+		existingPkgs[p] = true
+	}
+	for _, pkg := range ComputeExternalToolPackages(state.ExternalTools) {
+		if !existingPkgs[pkg] {
+			existingPkgs[pkg] = true
+			cfg.Tools.User = append(cfg.Tools.User, pkg)
+		}
 	}
 
 	if err := config.SaveConfig(cfg); err != nil {

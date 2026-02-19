@@ -67,6 +67,7 @@ type Options struct {
 	Memory            string
 	CPUs              string
 	Keybindings       string
+	FullGitSupport    bool
 }
 
 // AgentContainer runs an agent container interactively.
@@ -172,6 +173,50 @@ func AgentContainer(rt container.Runtime, opts Options) (int, error) {
 			}))
 			ipcServer.Start()
 			defer ipcServer.Stop()
+		}
+	}
+
+	// IDE relay: bridge the host IDE's WebSocket to a Unix socket in the
+	// IPC directory so the containerised agent can reach it without host
+	// network access.
+	var ideRelay *IDERelay
+	if idePort, ok := DetectIDE(opts.Agent); ok {
+		if opts.NoFirewall {
+			// Host network: 127.0.0.1 is the host loopback, no relay needed.
+			args = append(args,
+				"-e", "CLAUDE_CODE_SSE_PORT="+idePort,
+				"-e", "ENABLE_IDE_INTEGRATION=true",
+			)
+			ideLockDir := filepath.Join(os.Getenv("HOME"), ".claude", "ide")
+			if info, statErr := os.Stat(ideLockDir); statErr == nil && info.IsDir() {
+				args = append(args, "-v", ideLockDir+":/home/user/.claude/ide:ro")
+			}
+		} else if ipcServer != nil {
+			ideRelay = StartIDERelay(ipcServer.SocketDir(), idePort)
+			if ideRelay != nil {
+				ideRelay.LockDir = PrepareIDELockFile(idePort)
+				args = append(args, ideRelay.ContainerArgs()...)
+			}
+		}
+	}
+	defer StopIDERelay(ideRelay)
+
+	// Full git support: mount SSH_AUTH_SOCK socket and .gitconfig so that
+	// git/ssh inside the container can request signatures (without exposing
+	// private key material) and honour the user's git identity/aliases.
+	if opts.FullGitSupport {
+		if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
+			if info, err := os.Stat(sock); err == nil && info.Mode()&os.ModeSocket != 0 {
+				args = append(args,
+					"-v", sock+":/run/exitbox/ssh-agent.sock",
+					"-e", "SSH_AUTH_SOCK=/run/exitbox/ssh-agent.sock",
+				)
+			}
+		}
+		// Mount host .gitconfig read-only so user.name/email/aliases are available.
+		gitconfig := filepath.Join(os.Getenv("HOME"), ".gitconfig")
+		if info, err := os.Stat(gitconfig); err == nil && !info.IsDir() {
+			args = append(args, "-v", gitconfig+":/home/user/.gitconfig:ro")
 		}
 	}
 
@@ -460,6 +505,9 @@ func isReservedEnvVar(key string) bool {
 		"EXITBOX_KEYBINDINGS":     true,
 		"EXITBOX_VAULT_ENABLED":   true,
 		"EXITBOX_VAULT_READONLY":  true,
+		"EXITBOX_IDE_PORT":        true,
+		"CLAUDE_CODE_SSE_PORT":    true,
+		"ENABLE_IDE_INTEGRATION":  true,
 		"TERM":                    true,
 		"http_proxy":              true,
 		"https_proxy":             true,
@@ -472,6 +520,7 @@ func isReservedEnvVar(key string) bool {
 		"ANTHROPIC_AUTH_TOKEN":    true,
 		"ANTHROPIC_API_KEY":       true,
 		"OPENAI_BASE_URL":         true,
+		"SSH_AUTH_SOCK":            true,
 	}
 	return reserved[key]
 }

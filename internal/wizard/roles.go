@@ -17,6 +17,11 @@
 // Package wizard implements the interactive TUI setup wizard for ExitBox.
 package wizard
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // Role represents a developer role with preset defaults.
 type Role struct {
 	Name           string
@@ -147,6 +152,32 @@ var AllToolCategories = []ToolCategory{
 	{Name: "Security", Packages: []string{"nmap", "tcpdump", "netcat-openbsd"}},
 }
 
+// ExternalToolConfig describes a host config directory that hints at tool usage.
+type ExternalToolConfig struct {
+	HostPath    string // relative to $HOME, e.g. ".config/gh"
+	Description string // shown when detected
+}
+
+// ExternalTool represents an installable external tool with host config detection.
+type ExternalTool struct {
+	Name        string
+	Description string
+	Packages    []string             // Alpine APK packages
+	Configs     []ExternalToolConfig // Host configs to detect (for UI hints)
+}
+
+// AllExternalTools defines the available external tools.
+var AllExternalTools = []ExternalTool{
+	{
+		Name:        "GitHub CLI",
+		Description: "gh — GitHub from the command line",
+		Packages:    []string{"github-cli"},
+		Configs: []ExternalToolConfig{
+			{HostPath: ".config/gh", Description: "GitHub CLI auth"},
+		},
+	},
+}
+
 // AllAgents defines the selectable agents.
 var AllAgents = []AgentOption{
 	{Name: "claude", DisplayName: "Claude Code", Description: "Anthropic's AI coding assistant"},
@@ -237,5 +268,51 @@ func ComputeBinaries(categories []string) []Binary {
 		}
 	}
 
+	return result
+}
+
+// ComputeExternalToolPackages computes Alpine packages from selected external tools.
+func ComputeExternalToolPackages(names []string) []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, name := range names {
+		for _, et := range AllExternalTools {
+			if et.Name == name {
+				for _, pkg := range et.Packages {
+					if !seen[pkg] {
+						seen[pkg] = true
+						result = append(result, pkg)
+					}
+				}
+				break
+			}
+		}
+	}
+
+	return result
+}
+
+// DetectExternalToolConfigs checks $HOME for known external tool config
+// directories and returns a map of tool name → detected host paths.
+func DetectExternalToolConfigs() map[string][]string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return nil
+	}
+
+	result := make(map[string][]string)
+	for _, et := range AllExternalTools {
+		for _, cfg := range et.Configs {
+			p := filepath.Join(home, cfg.HostPath)
+			if _, err := os.Stat(p); err == nil {
+				result[et.Name] = append(result[et.Name], cfg.HostPath)
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
 	return result
 }

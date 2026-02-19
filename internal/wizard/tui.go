@@ -71,6 +71,8 @@ type State struct {
 	VaultReadOnly       bool              // vault is read-only (agents cannot store new secrets)
 	VaultPassword       string            // vault encryption password (set during wizard init)
 	Keybindings         map[string]string // configurable keybindings (e.g. "workspace_menu" -> "C-M-p")
+	ExternalTools       []string          // selected external tools (e.g. "GitHub CLI")
+	FullGitSupport      bool              // full git support (SSH agent + .gitconfig)
 }
 
 // Model is the root bubbletea model for the wizard.
@@ -286,6 +288,11 @@ func NewModelFromConfig(cfg *config.Config) Model {
 		}
 	}
 
+	// Pre-check external tools
+	for _, et := range cfg.ExternalTools {
+		checked["extool:"+et] = true
+	}
+
 	// Settings
 	checked["setting:auto_update"] = cfg.Settings.AutoUpdate
 	checked["setting:status_bar"] = cfg.Settings.StatusBar
@@ -294,6 +301,7 @@ func NewModelFromConfig(cfg *config.Config) Model {
 	checked["setting:auto_resume"] = cfg.Settings.DefaultFlags.AutoResume
 	checked["setting:pass_env"] = !cfg.Settings.DefaultFlags.NoEnv
 	checked["setting:read_only"] = cfg.Settings.DefaultFlags.ReadOnly
+	checked["setting:full_git"] = cfg.Settings.DefaultFlags.FullGitSupport
 
 	// On re-run, always start at the top menu so the user can choose
 	// between workspace management and general settings.
@@ -1029,6 +1037,7 @@ func (m Model) viewLanguage() string {
 // --- Tools Step (multi-select) ---
 
 func (m Model) updateTools(msg tea.Msg) (tea.Model, tea.Cmd) {
+	totalItems := len(AllToolCategories) + len(AllExternalTools)
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
 		case "up", "k":
@@ -1036,17 +1045,29 @@ func (m Model) updateTools(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(AllToolCategories)-1 {
+			if m.cursor < totalItems-1 {
 				m.cursor++
 			}
 		case " ", "x":
-			k := "tool:" + AllToolCategories[m.cursor].Name
-			m.checked[k] = !m.checked[k]
+			if m.cursor < len(AllToolCategories) {
+				k := "tool:" + AllToolCategories[m.cursor].Name
+				m.checked[k] = !m.checked[k]
+			} else {
+				idx := m.cursor - len(AllToolCategories)
+				k := "extool:" + AllExternalTools[idx].Name
+				m.checked[k] = !m.checked[k]
+			}
 		case "enter":
 			m.state.ToolCategories = nil
 			for _, t := range AllToolCategories {
 				if m.checked["tool:"+t.Name] {
 					m.state.ToolCategories = append(m.state.ToolCategories, t.Name)
+				}
+			}
+			m.state.ExternalTools = nil
+			for _, et := range AllExternalTools {
+				if m.checked["extool:"+et.Name] {
+					m.state.ExternalTools = append(m.state.ExternalTools, et.Name)
 				}
 			}
 			m.visitedSteps[stepTools] = true
@@ -1100,6 +1121,35 @@ func (m Model) viewTools() string {
 		firstLine := strings.TrimLeft(wrapped, " ")
 		pkgs := dimStyle.Render(firstLine)
 		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedName, pkgs))
+	}
+
+	// External Tools section
+	if len(AllExternalTools) > 0 {
+		b.WriteString("\n")
+		b.WriteString(subtitleStyle.Render("  External Tools\n"))
+		b.WriteString("\n")
+		detected := DetectExternalToolConfigs()
+		for i, et := range AllExternalTools {
+			idx := len(AllToolCategories) + i
+			cursor := "  "
+			if m.cursor == idx {
+				cursor = cursorStyle.Render("> ")
+			}
+			check := "[ ]"
+			if m.checked["extool:"+et.Name] {
+				check = selectedStyle.Render("[x]")
+			}
+			paddedName := fmt.Sprintf("%-15s", et.Name)
+			if m.cursor == idx {
+				paddedName = selectedStyle.Render(paddedName)
+			}
+			desc := dimStyle.Render(et.Description)
+			hint := ""
+			if paths, ok := detected[et.Name]; ok && len(paths) > 0 {
+				hint = " " + successStyle.Render("(~/"+paths[0]+" detected)")
+			}
+			b.WriteString(fmt.Sprintf("%s%s %s %s%s\n", cursor, check, paddedName, desc, hint))
+		}
 	}
 
 	b.WriteString(helpStyle.Render("\nSpace to toggle, Enter to confirm, Esc to go back" + m.tabHint()))
@@ -1970,6 +2020,7 @@ var settingsOptions = []struct {
 	{"setting:auto_resume", "Auto-resume sessions", "Automatically resume the last agent conversation"},
 	{"setting:pass_env", "Pass host environment", "Forward host environment variables into the container"},
 	{"setting:read_only", "Read-only workspace", "Mount workspace as read-only (agents cannot modify files)"},
+	{"setting:full_git", "Full Git support", "Mount SSH agent + .gitconfig into container (exposes git identity)"},
 }
 
 func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1994,6 +2045,7 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state.PassEnv = m.checked["setting:pass_env"]
 			m.state.ReadOnly = m.checked["setting:read_only"]
 			m.state.MakeDefault = m.checked["setting:make_default"]
+			m.state.FullGitSupport = m.checked["setting:full_git"]
 			m.visitedSteps[stepSettings] = true
 			if !m.isFirstRun && m.topMenuChoice == 0 {
 				// Workspace management: Settings → Domains or Vault
@@ -2042,6 +2094,9 @@ func (m Model) viewSettings() string {
 		}
 		desc := dimStyle.Render(opt.Description)
 		if opt.Key == "setting:firewall" && !m.checked[opt.Key] {
+			desc = warnStyle.Render("⚠ " + opt.Description)
+		}
+		if opt.Key == "setting:full_git" && m.checked[opt.Key] {
 			desc = warnStyle.Render("⚠ " + opt.Description)
 		}
 		b.WriteString(fmt.Sprintf("%s%s %s %s\n", cursor, check, paddedLabel, desc))
@@ -2488,6 +2543,15 @@ func (m Model) viewReview() string {
 		}
 	}
 	b.WriteString(fmt.Sprintf("  Vault:        %s\n", vaultStr))
+	gitStr := dimStyle.Render("no")
+	if m.state.FullGitSupport {
+		gitStr = warnStyle.Render("⚠ yes")
+	}
+	b.WriteString(fmt.Sprintf("  Full Git:     %s\n", gitStr))
+
+	if len(m.state.ExternalTools) > 0 {
+		b.WriteString(fmt.Sprintf("  Ext. tools:   %s\n", selectedStyle.Render(strings.Join(m.state.ExternalTools, ", "))))
+	}
 
 	var profiles []string
 	if m.state.OriginalDevelopment != nil {
@@ -2802,8 +2866,15 @@ func (m Model) collectAllStepState() Model {
 	m.state.PassEnv = m.checked["setting:pass_env"]
 	m.state.ReadOnly = m.checked["setting:read_only"]
 	m.state.MakeDefault = m.checked["setting:make_default"]
+	m.state.FullGitSupport = m.checked["setting:full_git"]
 	m.state.DomainCategories = m.domainCategories
 	m.state.Keybindings = copyMap(m.keybindings)
+	m.state.ExternalTools = nil
+	for _, et := range AllExternalTools {
+		if m.checked["extool:"+et.Name] {
+			m.state.ExternalTools = append(m.state.ExternalTools, et.Name)
+		}
+	}
 	return m
 }
 
@@ -2842,6 +2913,12 @@ func (m Model) collectCurrentStepState() Model {
 				m.state.ToolCategories = append(m.state.ToolCategories, t.Name)
 			}
 		}
+		m.state.ExternalTools = nil
+		for _, et := range AllExternalTools {
+			if m.checked["extool:"+et.Name] {
+				m.state.ExternalTools = append(m.state.ExternalTools, et.Name)
+			}
+		}
 	case stepPackages:
 		m.state.CustomPackages = nil
 		for pkg := range m.pkgSelected {
@@ -2866,6 +2943,7 @@ func (m Model) collectCurrentStepState() Model {
 		m.state.PassEnv = m.checked["setting:pass_env"]
 		m.state.ReadOnly = m.checked["setting:read_only"]
 		m.state.MakeDefault = m.checked["setting:make_default"]
+		m.state.FullGitSupport = m.checked["setting:full_git"]
 	case stepKeybindings:
 		m.state.Keybindings = copyMap(m.keybindings)
 	case stepDomains:
