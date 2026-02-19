@@ -795,13 +795,14 @@ run_agent_loop() {
 }
 
 setup_git_credential_helper() {
-    # If gh is installed and GH_TOKEN is available (via vault), configure
-    # git to use gh as the HTTPS credential helper.
+    # If gh is installed, configure git to use gh as the HTTPS credential helper.
+    # Skip when ~/.gitconfig is read-only (e.g. mounted from host via FullGitSupport)
+    # since the host config already has the user's preferred credential helpers.
     command -v gh >/dev/null 2>&1 || return 0
+    [[ -w "$HOME/.gitconfig" ]] || [[ ! -f "$HOME/.gitconfig" ]] || return 0
 
-    # Set up gh as git credential helper for GitHub HTTPS
-    git config --global credential."https://github.com".helper '!gh auth git-credential'
-    git config --global credential."https://gist.github.com".helper '!gh auth git-credential'
+    git config --global credential."https://github.com".helper '!gh auth git-credential' 2>/dev/null || true
+    git config --global credential."https://gist.github.com".helper '!gh auth git-credential' 2>/dev/null || true
 }
 
 setup_ssh_proxy_tunnel() {

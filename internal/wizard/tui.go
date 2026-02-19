@@ -987,13 +987,15 @@ func (m Model) updateLanguage(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m = m.collectAllStepState()
 				if len(m.workspaces) > 0 {
 					m.step = stepCopyCredentials
+					m.cursor = 0
 				} else {
 					m.step = stepVault
+					m.cursor = m.vaultInitCursor()
 				}
 			} else {
 				m.step = stepTools
+				m.cursor = 0
 			}
-			m.cursor = 0
 		case "esc":
 			m.step = stepRole
 			m.cursor = 0
@@ -1541,11 +1543,12 @@ func (m Model) updateCopyCredentials(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.workspaceOnly {
 				m.visitedSteps[stepCopyCredentials] = true
 				m.step = stepVault
+				m.cursor = m.vaultInitCursor()
 			} else {
 				m.visitedSteps[stepCopyCredentials] = true
 				m.step = stepAgents
+				m.cursor = 0
 			}
-			m.cursor = 0
 		case "esc":
 			if m.workspaceOnly {
 				m.step = stepLanguage
@@ -1624,6 +1627,16 @@ func (m Model) workspaceOnlyStepCount() int {
 }
 
 // --- Vault Step (toggle) ---
+
+// vaultInitCursor returns the initial cursor position for the vault choice
+// screen. When the vault already exists, default to "Keep current settings"
+// (option 3) so running setup again preserves the vault without extra clicks.
+func (m Model) vaultInitCursor() int {
+	if m.vaultExisting {
+		return 3
+	}
+	return 0
+}
 
 func (m Model) updateVault(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
@@ -2058,17 +2071,18 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.step = stepDomains
 					m.domainCatCursor = 0
 					m.domainItemCursor = 0
+					m.cursor = 0
 				} else {
 					m.step = stepVault
-					m.cursor = 0
+					m.cursor = m.vaultInitCursor()
 				}
 			} else {
 				// First-run: Settings → Keybindings
 				m.step = stepKeybindings
 				m.kbCursor = 0
 				m.kbEditMode = false
+				m.cursor = 0
 			}
-			m.cursor = 0
 		case "esc":
 			m.step = stepAgents
 			m.cursor = 0
@@ -2226,11 +2240,11 @@ func (m Model) updateKeybindings(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.step = stepDomains
 				m.domainCatCursor = 0
 				m.domainItemCursor = 0
+				m.cursor = 0
 			} else {
 				m.step = stepVault
-				m.cursor = 0
+				m.cursor = m.vaultInitCursor()
 			}
-			m.cursor = 0
 		case "esc":
 			if !m.isFirstRun && m.topMenuChoice == 1 {
 				// General settings: back to top menu
@@ -2810,7 +2824,11 @@ func (m Model) updateSidebar(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.collectAllStepState()
 		}
 		m.step = target
-		m.cursor = 0
+		if target == stepVault {
+			m.cursor = m.vaultInitCursor()
+		} else {
+			m.cursor = 0
+		}
 		m.sidebarFocused = false
 		// If jumping to packages, trigger index load if needed
 		if target == stepPackages && m.pkgIndex == nil && !m.pkgLoading && m.pkgLoadErr == "" {
@@ -3014,7 +3032,7 @@ func (m Model) updateDomains(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state.DomainCategories = m.domainCategories
 		m.visitedSteps[stepDomains] = true
 		m.step = stepVault
-		m.cursor = 0
+		m.cursor = m.vaultInitCursor()
 	case "esc":
 		if !m.isFirstRun && m.topMenuChoice == 0 {
 			// Workspace management: previous step is Settings

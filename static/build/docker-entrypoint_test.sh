@@ -993,8 +993,47 @@ test_git_credential_helper_configures_with_gh() {
     rm -rf "$tmpdir"
 }
 
+test_git_credential_helper_skips_readonly_gitconfig() {
+    if ! command -v git >/dev/null 2>&1; then
+        ((PASS++))
+        return
+    fi
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    # Create a read-only .gitconfig (simulates host mount with :ro)
+    echo "[user]" > "$tmpdir/.gitconfig"
+    echo "    name = Test" >> "$tmpdir/.gitconfig"
+    chmod 444 "$tmpdir/.gitconfig"
+
+    local result
+    result="$(
+        export HOME="$tmpdir"
+        gh() { return 0; }
+        command() {
+            if [[ "$1" == "-v" && "$2" == "gh" ]]; then return 0; fi
+            builtin command "$@"
+        }
+        eval "$SETUP_GIT_FUNC"
+        setup_git_credential_helper
+        echo "ok"
+    )" 2>/dev/null
+    assert_eq "git_credential_helper skips read-only gitconfig" "ok" "$result"
+    # Verify the file was NOT modified (no credential helper added)
+    local content
+    content="$(cat "$tmpdir/.gitconfig")"
+    if [[ "$content" == *"credential"* ]]; then
+        ((FAIL++))
+        ERRORS+=("FAIL: read-only .gitconfig should not be modified")
+    else
+        ((PASS++))
+    fi
+    chmod 644 "$tmpdir/.gitconfig"
+    rm -rf "$tmpdir"
+}
+
 test_git_credential_helper_skips_without_gh
 test_git_credential_helper_configures_with_gh
+test_git_credential_helper_skips_readonly_gitconfig
 
 # ============================================================================
 # SSH proxy tunnel tests
