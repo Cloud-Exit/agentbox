@@ -804,6 +804,88 @@ setup_git_credential_helper() {
     git config --global credential."https://gist.github.com".helper '!gh auth git-credential'
 }
 
+setup_ssh_proxy_tunnel() {
+    # When Full Git support is active (SSH_AUTH_SOCK set) and the firewall is
+    # active (http_proxy set), configure SSH to tunnel through the Squid HTTP
+    # proxy.  SSH normally uses port 22 which Squid blocks (CONNECT only on
+    # SSL_ports/443).  Major git hosts offer SSH on port 443:
+    #   - github.com    → ssh.github.com:443
+    #   - gitlab.com    → altssh.gitlab.com:443
+    #   - bitbucket.org → altssh.bitbucket.org:443
+    #
+    # socat's PROXY address type speaks HTTP CONNECT, tunnelling the SSH
+    # session through Squid on the allowed port.
+    [[ -z "${SSH_AUTH_SOCK:-}" ]] && return 0
+    [[ -z "${http_proxy:-}" ]] && return 0
+    command -v socat >/dev/null 2>&1 || return 0
+
+    # Parse proxy host and port from http_proxy (e.g. http://172.18.0.2:3128).
+    local proxy_url="${http_proxy#http://}"
+    proxy_url="${proxy_url#https://}"
+    proxy_url="${proxy_url%%/*}"
+    local proxy_host="${proxy_url%%:*}"
+    local proxy_port="${proxy_url##*:}"
+    [[ -z "$proxy_host" ]] && return 0
+    # If no port separator was found, proxy_port == proxy_host; default to 3128.
+    [[ "$proxy_port" == "$proxy_host" ]] && proxy_port="3128"
+
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+
+    # Pin known SSH host keys for major git hosts (published by each provider).
+    # Format: [hostname]:port key-type base64-key
+    cat > "$HOME/.ssh/known_hosts" <<'KNOWNEOF'
+[ssh.github.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+[ssh.github.com]:443 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+[ssh.github.com]:443 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+[altssh.gitlab.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf
+[altssh.gitlab.com]:443 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBFSMqzJeV9rUzU4kWitGjeR4PWSa29SPqJ1fVkhtj3Hw9xjLVXVYrU9QlYWrOLXBpQ6KWjbjTDTdDkoohFzgbEY=
+[altssh.gitlab.com]:443 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsj2bNKTBSpIYDEGk9KxsGh3mySTRgMtXL583qmBpzeQ+jqCMRgBqB98u3z++J1sKlXHWfM9dyhSevkMwSbhoR8XIq/U0tCNyokEi/ueaBMCvbcTHhO7FcwzY92WK4Yt0aGROY5qX2UKSeOvuP4D6TPqKF1onrSzH9bx9XUf2lEdWT/ia1NEKjunUqu1xOB/StKDHMoX4/OKyIzuS0q/T1zOATthvasJFoPrAjkohTyaDUz2LN5JoH839hViyEG82yB+MjcFV5MU3N1l1QL3cVUCh93xSaua1N85qivl+siMkPGbO5xR/En4iEY6K2XPASUEMaieWVNTRCtJ4S8H+9
+[altssh.bitbucket.org]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIazEu89wgQZ4bqs3d63QSMzYVa0MuJ2e2gKTKqu+UUO
+[altssh.bitbucket.org]:443 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBPIQmuzMBuKdWeF4+a2sjSSpBK0iqitSQ+5BM9KhpexuGt20JpTVM7u5BDZngncgrqDMbWdxMWWOGtZ9UgbqgZE=
+[altssh.bitbucket.org]:443 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDQeJzhupRu0u0cdegZIa8e86EG2qOCsIsD1Xw0xSeiPDlCr7kq97NLmMbpKTX6Esc30NuoqEEHCuc7yWtwp8dI76EEEB1VqY9QJq6vk+aySyboD5QF61I/1WeTwu+deCbgKMGbUijeXhtfbxSxm6JwGrXrhBdofTsbKRUsrN1WoNgUa8uqN1Vx6WAJw1JHPhglEGGHea6QICwJOAr/6mrui/oB7pkaWKHj3z7d1IC4KWLtY47elvjbaTlkN04Kc/5LFEirorGYVbt15kAUlqGM65pk6ZBxtaO3+30LVlORZkxOh+LKL/BvbZ/iRNhItLqNyieoQj/uh/7Iv4uyH/cV/0b4WDSd3DptigWq84lJubb9t/DnZlrJazxyDCulTmKdOR7vs9gMTo+uoIrPSb8ScTtvw65+odKAlBj59dhnVp9zd7QUojOpXlL62Aw56U4oO+FALuevvMjiWeavKhJqlR7i5n9srYcrNV7ttmDw7kf/97P5zauIhxcjX+xHv4M=
+KNOWNEOF
+    chmod 600 "$HOME/.ssh/known_hosts"
+
+    cat > "$HOME/.ssh/config" <<SSHEOF
+# ExitBox: SSH proxy tunneling through firewall.
+# Auto-generated on container start — do not edit.
+
+Host github.com
+    Hostname ssh.github.com
+    Port 443
+    User git
+    StrictHostKeyChecking yes
+    ProxyCommand socat - PROXY:${proxy_host}:%h:%p,proxyport=${proxy_port}
+
+Host gitlab.com
+    Hostname altssh.gitlab.com
+    Port 443
+    User git
+    StrictHostKeyChecking yes
+    ProxyCommand socat - PROXY:${proxy_host}:%h:%p,proxyport=${proxy_port}
+
+Host bitbucket.org
+    Hostname altssh.bitbucket.org
+    Port 443
+    User git
+    StrictHostKeyChecking yes
+    ProxyCommand socat - PROXY:${proxy_host}:%h:%p,proxyport=${proxy_port}
+SSHEOF
+    chmod 600 "$HOME/.ssh/config"
+}
+
+setup_rtk() {
+    # RTK token-optimized CLI wrappers — gated by EXITBOX_RTK=true.
+    [[ "${EXITBOX_RTK:-}" != "true" ]] && return 0
+    command -v rtk >/dev/null 2>&1 || return 0
+
+    # For Claude: install PreToolUse hook to auto-rewrite commands to rtk equivalents.
+    if [[ "${AGENT:-}" == "claude" ]]; then
+        rtk init -g --hook-only --auto-patch 2>/dev/null || true
+    fi
+}
+
 # ============================================================================
 # AGENT DETECTION
 # ============================================================================
@@ -1070,6 +1152,36 @@ ${KV_RULES}
 <!-- END-EXITBOX-KV -->
 "
 
+# Append rtk instructions when rtk support is enabled.
+if [[ "${EXITBOX_RTK:-}" == "true" ]] && command -v rtk >/dev/null 2>&1; then
+    SANDBOX_INSTRUCTIONS="${SANDBOX_INSTRUCTIONS}
+<!-- BEGIN-EXITBOX-RTK -->
+# Token-Optimized Commands (RTK)
+
+\`rtk\` is pre-installed to reduce CLI output token consumption by 60-90%.
+ALWAYS prefix supported commands with \`rtk\` for compact, agent-friendly output:
+
+- \`rtk git <cmd>\` — git operations (status, diff, log, add, commit, push, pull, branch, fetch, stash)
+- \`rtk go <cmd>\` — Go tooling (test, build, vet)
+- \`rtk golangci-lint run\` — Go linting
+- \`rtk gh <cmd>\` — GitHub CLI (pr, issue, run)
+- \`rtk read <file>\` — read files (replaces cat)
+- \`rtk grep <pattern>\` — search (replaces grep/rg)
+- \`rtk ls [path]\` — directory listing
+- \`rtk curl <url>\` — HTTP requests
+- \`rtk pytest\` / \`rtk ruff <cmd>\` / \`rtk pip <cmd>\` — Python tooling
+- \`rtk cargo <cmd>\` — Rust build/test
+- \`rtk docker <cmd>\` / \`rtk kubectl <cmd>\` — containers/orchestration
+- \`rtk pnpm <cmd>\` / \`rtk vitest run\` / \`rtk tsc\` / \`rtk lint\` / \`rtk prettier\` — JS/TS tooling
+- \`rtk prisma <cmd>\` / \`rtk playwright <cmd>\` — database/E2E
+
+Do NOT use bare \`git\`, \`cat\`, \`ls\`, \`grep\`, \`rg\`, or other raw CLI commands when
+\`rtk\` equivalents exist. The rtk output is dramatically smaller, saving significant
+tokens and cost per session.
+<!-- END-EXITBOX-RTK -->
+"
+fi
+
 inject_sandbox_instructions() {
     local target=""
     case "$AGENT" in
@@ -1091,26 +1203,27 @@ inject_sandbox_instructions() {
         return
     fi
 
-    if [[ -f "$target" ]]; then
-        # Remove any existing sandbox block (new marker format or legacy).
-        if grep -q "BEGIN-EXITBOX-SANDBOX" "$target" 2>/dev/null; then
-            sed -i '/<!-- BEGIN-EXITBOX-SANDBOX -->/,/<!-- END-EXITBOX-SANDBOX -->/d' "$target"
-        elif grep -q "# ExitBox Sandbox Environment" "$target" 2>/dev/null; then
-            # Legacy format: remove from header through trailing blank lines.
-            sed -i '/^# ExitBox Sandbox Environment$/,/^[[:space:]]*$/d' "$target"
-        fi
-        # Remove any existing vault blocks from previous runs.
-        if grep -q "BEGIN-EXITBOX-VAULT" "$target" 2>/dev/null; then
-            sed -i '/<!-- BEGIN-EXITBOX-VAULT -->/,/<!-- END-EXITBOX-VAULT -->/d' "$target"
-        fi
-        # Remove any existing KV blocks from previous runs.
-        if grep -q "BEGIN-EXITBOX-KV" "$target" 2>/dev/null; then
-            sed -i '/<!-- BEGIN-EXITBOX-KV -->/,/<!-- END-EXITBOX-KV -->/d' "$target"
-        fi
-        printf '\n%s' "$SANDBOX_INSTRUCTIONS" >> "$target"
-    else
-        printf '%s' "$SANDBOX_INSTRUCTIONS" > "$target"
+    # Build the instruction file from two sources:
+    #   1. User's agents.md (workspace-level, never touched by ExitBox)
+    #   2. ExitBox sandbox instructions (auto-generated)
+    #
+    # The user's agents.md lives one level above the agent dir so the same
+    # instructions apply to all agents in the workspace:
+    #   /home/user/.exitbox-config/profiles/global/<workspace>/agents.md
+    local user_agents_md=""
+    local ws_root="${GLOBAL_WORKSPACE_ROOT}/${EXITBOX_WORKSPACE_NAME:-default}"
+    if [[ -f "${ws_root}/agents.md" ]]; then
+        user_agents_md="${ws_root}/agents.md"
     fi
+
+    # Write the combined file (always regenerated on container start).
+    {
+        if [[ -n "$user_agents_md" ]]; then
+            cat "$user_agents_md"
+            printf '\n\n'
+        fi
+        printf '%s' "$SANDBOX_INSTRUCTIONS"
+    } > "$target"
 }
 
 # ============================================================================
@@ -1124,6 +1237,8 @@ if [[ "$AGENT" == "codex" ]]; then
 fi
 start_ide_relay
 setup_git_credential_helper
+setup_ssh_proxy_tunnel
+setup_rtk
 trap 'cleanup_relay; cleanup_ide_relay' EXIT INT TERM
 
 if [[ "${1:-}" == "__agent-loop" ]]; then

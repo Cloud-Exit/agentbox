@@ -77,6 +77,7 @@ type BinaryConfig struct {
 type SettingsConfig struct {
 	AutoUpdate       bool              `yaml:"auto_update"`
 	StatusBar        bool              `yaml:"status_bar"`
+	RTK              bool              `yaml:"rtk"`
 	DefaultWorkspace string            `yaml:"default_workspace,omitempty"`
 	DefaultFlags     DefaultFlags      `yaml:"default_flags"`
 	Keybindings      KeybindingsConfig `yaml:"keybindings,omitempty"`

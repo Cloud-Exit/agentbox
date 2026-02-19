@@ -245,6 +245,7 @@ func runAgent(agentName string, passthrough []string) {
 			CPUs:              flags.CPUs,
 			Keybindings:       cfg.Settings.Keybindings.EnvValue(),
 			FullGitSupport:    cfg.Settings.DefaultFlags.FullGitSupport,
+			RTK:               cfg.Settings.RTK,
 		}
 
 		exitCode, err := run.AgentContainer(rt, opts)

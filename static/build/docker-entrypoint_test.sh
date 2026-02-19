@@ -57,7 +57,7 @@ trap 'rm -rf "$TEST_TMPDIR"' EXIT
 unset EXITBOX_PROJECT_KEY EXITBOX_WORKSPACE_NAME EXITBOX_WORKSPACE_SCOPE
 unset EXITBOX_AGENT EXITBOX_AUTO_RESUME EXITBOX_IPC_SOCKET EXITBOX_KEYBINDINGS
 unset EXITBOX_SESSION_NAME EXITBOX_RESUME_TOKEN EXITBOX_VAULT_ENABLED
-unset EXITBOX_VAULT_READONLY
+unset EXITBOX_VAULT_READONLY EXITBOX_RTK
 
 # Extract functions from the entrypoint using awk (handles nested braces)
 extract_func() {
@@ -784,15 +784,16 @@ test_vault_block_no_duplicates_on_reinject() {
     local tmpdir
     tmpdir="$(mktemp -d)"
     mkdir -p "$tmpdir/.claude"
-    echo "# Existing content" > "$tmpdir/.claude/CLAUDE.md"
 
     # Build SANDBOX_INSTRUCTIONS with vault enabled.
     EXITBOX_VAULT_ENABLED=true eval "$SANDBOX_BLOCK"
 
     # Define the inject function in this shell, then call it twice.
     eval "$INJECT_FUNC"
-    AGENT="claude" HOME="$tmpdir" inject_sandbox_instructions
-    AGENT="claude" HOME="$tmpdir" inject_sandbox_instructions
+    GLOBAL_WORKSPACE_ROOT="$tmpdir/ws" EXITBOX_WORKSPACE_NAME="default" \
+        AGENT="claude" HOME="$tmpdir" inject_sandbox_instructions
+    GLOBAL_WORKSPACE_ROOT="$tmpdir/ws" EXITBOX_WORKSPACE_NAME="default" \
+        AGENT="claude" HOME="$tmpdir" inject_sandbox_instructions
 
     local count
     count=$(grep -c "BEGIN-EXITBOX-VAULT" "$tmpdir/.claude/CLAUDE.md")
@@ -806,6 +807,60 @@ test_vault_block_no_duplicates_on_reinject() {
 }
 
 test_vault_block_no_duplicates_on_reinject
+
+test_agents_md_included_in_injection() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    mkdir -p "$tmpdir/.claude"
+    mkdir -p "$tmpdir/ws/myworkspace"
+    echo "# My custom rules" > "$tmpdir/ws/myworkspace/agents.md"
+
+    eval "$SANDBOX_BLOCK"
+    eval "$INJECT_FUNC"
+    GLOBAL_WORKSPACE_ROOT="$tmpdir/ws" EXITBOX_WORKSPACE_NAME="myworkspace" \
+        AGENT="claude" HOME="$tmpdir" inject_sandbox_instructions
+
+    local result
+    result="$(cat "$tmpdir/.claude/CLAUDE.md")"
+    if [[ "$result" == *"My custom rules"* && "$result" == *"BEGIN-EXITBOX-SANDBOX"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: inject should include user agents.md content and sandbox block")
+    fi
+    rm -rf "$tmpdir"
+}
+
+test_agents_md_without_file() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    mkdir -p "$tmpdir/.claude"
+
+    eval "$SANDBOX_BLOCK"
+    eval "$INJECT_FUNC"
+    GLOBAL_WORKSPACE_ROOT="$tmpdir/ws" EXITBOX_WORKSPACE_NAME="default" \
+        AGENT="claude" HOME="$tmpdir" inject_sandbox_instructions
+
+    local result
+    result="$(cat "$tmpdir/.claude/CLAUDE.md")"
+    if [[ "$result" == *"BEGIN-EXITBOX-SANDBOX"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: inject without agents.md should still have sandbox block")
+    fi
+    # Should NOT contain "My custom rules" since no agents.md exists
+    if [[ "$result" != *"My custom rules"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: inject without agents.md should not contain user content")
+    fi
+    rm -rf "$tmpdir"
+}
+
+test_agents_md_included_in_injection
+test_agents_md_without_file
 
 # ============================================================================
 # IDE relay guard-condition tests
@@ -940,6 +995,277 @@ test_git_credential_helper_configures_with_gh() {
 
 test_git_credential_helper_skips_without_gh
 test_git_credential_helper_configures_with_gh
+
+# ============================================================================
+# SSH proxy tunnel tests
+# ============================================================================
+echo ""
+echo "Testing SSH proxy tunnel setup..."
+
+SETUP_SSH_FUNC="$(extract_func setup_ssh_proxy_tunnel)"
+
+test_ssh_proxy_tunnel_skips_without_ssh_auth_sock() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    local result
+    result="$(
+        export HOME="$tmpdir"
+        unset SSH_AUTH_SOCK
+        export http_proxy="http://172.18.0.2:3128"
+        eval "$SETUP_SSH_FUNC"
+        setup_ssh_proxy_tunnel
+        echo "ok"
+    )" 2>/dev/null
+    assert_file_missing "ssh tunnel skips without SSH_AUTH_SOCK" "$tmpdir/.ssh/config"
+    rm -rf "$tmpdir"
+}
+
+test_ssh_proxy_tunnel_skips_without_http_proxy() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    local result
+    result="$(
+        export HOME="$tmpdir"
+        export SSH_AUTH_SOCK="/run/exitbox/ssh-agent.sock"
+        unset http_proxy
+        eval "$SETUP_SSH_FUNC"
+        setup_ssh_proxy_tunnel
+        echo "ok"
+    )" 2>/dev/null
+    assert_file_missing "ssh tunnel skips without http_proxy" "$tmpdir/.ssh/config"
+    rm -rf "$tmpdir"
+}
+
+test_ssh_proxy_tunnel_creates_config() {
+    if ! command -v socat >/dev/null 2>&1; then
+        ((PASS++))
+        return
+    fi
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    (
+        export HOME="$tmpdir"
+        export SSH_AUTH_SOCK="/run/exitbox/ssh-agent.sock"
+        export http_proxy="http://172.18.0.2:3128"
+        eval "$SETUP_SSH_FUNC"
+        setup_ssh_proxy_tunnel
+    ) 2>/dev/null
+    if [[ -f "$tmpdir/.ssh/config" ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: ssh proxy tunnel should create ~/.ssh/config")
+        rm -rf "$tmpdir"
+        return
+    fi
+    local content
+    content="$(cat "$tmpdir/.ssh/config")"
+    assert_contains "ssh config has github entry" "$content" "Host github.com"
+    assert_contains "ssh config has ssh.github.com hostname" "$content" "ssh.github.com"
+    assert_contains "ssh config has port 443" "$content" "Port 443"
+    assert_contains "ssh config has proxy host" "$content" "172.18.0.2"
+    assert_contains "ssh config has proxyport 3128" "$content" "proxyport=3128"
+    assert_contains "ssh config has gitlab entry" "$content" "Host gitlab.com"
+    assert_contains "ssh config has bitbucket entry" "$content" "Host bitbucket.org"
+    assert_contains "ssh config has StrictHostKeyChecking yes" "$content" "StrictHostKeyChecking yes"
+    rm -rf "$tmpdir"
+}
+
+test_ssh_proxy_tunnel_parses_proxy_without_port() {
+    if ! command -v socat >/dev/null 2>&1; then
+        ((PASS++))
+        return
+    fi
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    (
+        export HOME="$tmpdir"
+        export SSH_AUTH_SOCK="/run/exitbox/ssh-agent.sock"
+        export http_proxy="http://10.0.0.1"
+        eval "$SETUP_SSH_FUNC"
+        setup_ssh_proxy_tunnel
+    ) 2>/dev/null
+    local content
+    content="$(cat "$tmpdir/.ssh/config" 2>/dev/null)"
+    assert_contains "ssh config defaults to proxyport 3128" "$content" "proxyport=3128"
+    assert_contains "ssh config uses correct proxy host" "$content" "10.0.0.1"
+    rm -rf "$tmpdir"
+}
+
+test_ssh_proxy_tunnel_correct_permissions() {
+    if ! command -v socat >/dev/null 2>&1; then
+        ((PASS++))
+        return
+    fi
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    (
+        export HOME="$tmpdir"
+        export SSH_AUTH_SOCK="/run/exitbox/ssh-agent.sock"
+        export http_proxy="http://172.18.0.2:3128"
+        eval "$SETUP_SSH_FUNC"
+        setup_ssh_proxy_tunnel
+    ) 2>/dev/null
+    local dir_perms file_perms
+    dir_perms="$(stat -c '%a' "$tmpdir/.ssh" 2>/dev/null || stat -f '%Lp' "$tmpdir/.ssh" 2>/dev/null)"
+    file_perms="$(stat -c '%a' "$tmpdir/.ssh/config" 2>/dev/null || stat -f '%Lp' "$tmpdir/.ssh/config" 2>/dev/null)"
+    kh_perms="$(stat -c '%a' "$tmpdir/.ssh/known_hosts" 2>/dev/null || stat -f '%Lp' "$tmpdir/.ssh/known_hosts" 2>/dev/null)"
+    assert_eq "ssh dir has 700 permissions" "700" "$dir_perms"
+    assert_eq "ssh config has 600 permissions" "600" "$file_perms"
+    assert_eq "ssh known_hosts has 600 permissions" "600" "$kh_perms"
+    rm -rf "$tmpdir"
+}
+
+test_ssh_proxy_tunnel_writes_known_hosts() {
+    if ! command -v socat >/dev/null 2>&1; then
+        ((PASS++))
+        return
+    fi
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    (
+        export HOME="$tmpdir"
+        export SSH_AUTH_SOCK="/run/exitbox/ssh-agent.sock"
+        export http_proxy="http://172.18.0.2:3128"
+        eval "$SETUP_SSH_FUNC"
+        setup_ssh_proxy_tunnel
+    ) 2>/dev/null
+    if [[ -f "$tmpdir/.ssh/known_hosts" ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: ssh proxy tunnel should create ~/.ssh/known_hosts")
+        rm -rf "$tmpdir"
+        return
+    fi
+    local content
+    content="$(cat "$tmpdir/.ssh/known_hosts")"
+    assert_contains "known_hosts has ssh.github.com" "$content" "[ssh.github.com]:443"
+    assert_contains "known_hosts has altssh.gitlab.com" "$content" "[altssh.gitlab.com]:443"
+    assert_contains "known_hosts has altssh.bitbucket.org" "$content" "[altssh.bitbucket.org]:443"
+    assert_contains "known_hosts has ed25519 key" "$content" "ssh-ed25519"
+    assert_contains "known_hosts has ecdsa key" "$content" "ecdsa-sha2-nistp256"
+    assert_contains "known_hosts has rsa key" "$content" "ssh-rsa"
+    rm -rf "$tmpdir"
+}
+
+test_ssh_proxy_tunnel_strict_host_key_checking() {
+    if ! command -v socat >/dev/null 2>&1; then
+        ((PASS++))
+        return
+    fi
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    (
+        export HOME="$tmpdir"
+        export SSH_AUTH_SOCK="/run/exitbox/ssh-agent.sock"
+        export http_proxy="http://172.18.0.2:3128"
+        eval "$SETUP_SSH_FUNC"
+        setup_ssh_proxy_tunnel
+    ) 2>/dev/null
+    local content
+    content="$(cat "$tmpdir/.ssh/config")"
+    assert_contains "ssh config uses StrictHostKeyChecking yes" "$content" "StrictHostKeyChecking yes"
+    # Ensure accept-new is NOT used
+    if [[ "$content" == *"accept-new"* ]]; then
+        ((FAIL++))
+        ERRORS+=("FAIL: ssh config should not contain accept-new (TOFU mode)")
+    else
+        ((PASS++))
+    fi
+    rm -rf "$tmpdir"
+}
+
+test_ssh_proxy_tunnel_skips_without_ssh_auth_sock
+test_ssh_proxy_tunnel_skips_without_http_proxy
+test_ssh_proxy_tunnel_creates_config
+test_ssh_proxy_tunnel_parses_proxy_without_port
+test_ssh_proxy_tunnel_correct_permissions
+test_ssh_proxy_tunnel_writes_known_hosts
+test_ssh_proxy_tunnel_strict_host_key_checking
+
+# ============================================================================
+# RTK setup tests
+# ============================================================================
+echo ""
+echo "Testing RTK setup..."
+
+SETUP_RTK_FUNC="$(extract_func setup_rtk)"
+
+test_rtk_skips_when_disabled() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    local result
+    result="$(
+        export HOME="$tmpdir"
+        unset EXITBOX_RTK
+        AGENT="claude"
+        eval "$SETUP_RTK_FUNC"
+        setup_rtk
+        echo "ok"
+    )" 2>/dev/null
+    assert_eq "rtk skips when disabled" "ok" "$result"
+    # No hook files should be created
+    assert_file_missing "rtk no hooks when disabled" "$tmpdir/.claude/hooks/rtk-rewrite.sh"
+    rm -rf "$tmpdir"
+}
+
+test_rtk_skips_without_binary() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    local result
+    result="$(
+        export HOME="$tmpdir"
+        EXITBOX_RTK="true"
+        AGENT="claude"
+        # Override command to always fail for rtk
+        command() {
+            if [[ "$1" == "-v" && "$2" == "rtk" ]]; then return 1; fi
+            builtin command "$@"
+        }
+        eval "$SETUP_RTK_FUNC"
+        setup_rtk
+        echo "ok"
+    )" 2>/dev/null
+    assert_eq "rtk skips without binary" "ok" "$result"
+    rm -rf "$tmpdir"
+}
+
+test_rtk_sandbox_instructions_absent_when_disabled() {
+    local result
+    result="$(unset EXITBOX_RTK; eval "$SANDBOX_BLOCK"; printf '%s' "$SANDBOX_INSTRUCTIONS")"
+    if [[ "$result" == *"BEGIN-EXITBOX-RTK"* ]]; then
+        ((FAIL++))
+        ERRORS+=("FAIL: rtk instructions should be absent when EXITBOX_RTK is unset")
+    else
+        ((PASS++))
+    fi
+}
+
+test_rtk_sandbox_instructions_present_when_enabled() {
+    local result
+    result="$(
+        EXITBOX_RTK=true
+        # Mock rtk as available
+        command() {
+            if [[ "$1" == "-v" && "$2" == "rtk" ]]; then return 0; fi
+            builtin command "$@"
+        }
+        eval "$SANDBOX_BLOCK"
+        printf '%s' "$SANDBOX_INSTRUCTIONS"
+    )"
+    if [[ "$result" == *"BEGIN-EXITBOX-RTK"* && "$result" == *"rtk git"* ]]; then
+        ((PASS++))
+    else
+        ((FAIL++))
+        ERRORS+=("FAIL: rtk instructions should be present when EXITBOX_RTK=true and rtk binary exists")
+    fi
+}
+
+test_rtk_skips_when_disabled
+test_rtk_skips_without_binary
+test_rtk_sandbox_instructions_absent_when_disabled
+test_rtk_sandbox_instructions_present_when_enabled
 
 # ============================================================================
 # Results

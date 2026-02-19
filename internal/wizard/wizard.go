@@ -147,6 +147,7 @@ func applyResult(state State, existingCfg *config.Config) error {
 	cfg.ToolCategories = state.ToolCategories
 	cfg.Settings.AutoUpdate = state.AutoUpdate
 	cfg.Settings.StatusBar = state.StatusBar
+	cfg.Settings.RTK = state.RTK
 	cfg.Settings.DefaultFlags = config.DefaultFlags{
 		NoFirewall:      !state.EnableFirewall,
 		AutoResume:      state.AutoResume,

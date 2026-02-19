@@ -73,6 +73,7 @@ type State struct {
 	Keybindings         map[string]string // configurable keybindings (e.g. "workspace_menu" -> "C-M-p")
 	ExternalTools       []string          // selected external tools (e.g. "GitHub CLI")
 	FullGitSupport      bool              // full git support (SSH agent + .gitconfig)
+	RTK                 bool              // experimental: token-optimized CLI wrappers
 }
 
 // Model is the root bubbletea model for the wizard.
@@ -205,6 +206,7 @@ func NewModel() Model {
 	checked["setting:auto_resume"] = false
 	checked["setting:pass_env"] = true
 	checked["setting:read_only"] = false
+	checked["setting:rtk"] = false
 	kb := config.DefaultKeybindings()
 	return Model{
 		step:             stepWelcome,
@@ -302,6 +304,7 @@ func NewModelFromConfig(cfg *config.Config) Model {
 	checked["setting:pass_env"] = !cfg.Settings.DefaultFlags.NoEnv
 	checked["setting:read_only"] = cfg.Settings.DefaultFlags.ReadOnly
 	checked["setting:full_git"] = cfg.Settings.DefaultFlags.FullGitSupport
+	checked["setting:rtk"] = cfg.Settings.RTK
 
 	// On re-run, always start at the top menu so the user can choose
 	// between workspace management and general settings.
@@ -2021,6 +2024,7 @@ var settingsOptions = []struct {
 	{"setting:pass_env", "Pass host environment", "Forward host environment variables into the container"},
 	{"setting:read_only", "Read-only workspace", "Mount workspace as read-only (agents cannot modify files)"},
 	{"setting:full_git", "Full Git support", "Mount SSH agent + .gitconfig into container (exposes git identity)"},
+	{"setting:rtk", "RTK token optimizer", "Experimental: use rtk to reduce CLI output tokens by 60-90%"},
 }
 
 func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -2046,6 +2050,7 @@ func (m Model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state.ReadOnly = m.checked["setting:read_only"]
 			m.state.MakeDefault = m.checked["setting:make_default"]
 			m.state.FullGitSupport = m.checked["setting:full_git"]
+			m.state.RTK = m.checked["setting:rtk"]
 			m.visitedSteps[stepSettings] = true
 			if !m.isFirstRun && m.topMenuChoice == 0 {
 				// Workspace management: Settings → Domains or Vault
