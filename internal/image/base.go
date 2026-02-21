@@ -161,9 +161,12 @@ func buildBaseFull(ctx context.Context, rt container.Runtime, cmd, imageName str
 		return fmt.Errorf("failed to write .dockerignore: %w", err)
 	}
 
+	cfg := config.LoadOrDefault()
+
 	args := buildArgs(cmd)
 	args = append(args,
 		"--build-arg", fmt.Sprintf("EXITBOX_VERSION=%s", Version),
+		"--build-arg", fmt.Sprintf("INSTALL_RTK=%v", cfg.Settings.RTK),
 		"-t", publishedName,
 		"-f", dockerfilePath,
 		buildCtx,

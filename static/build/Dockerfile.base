@@ -40,9 +40,7 @@ RUN --mount=type=cache,target=/var/cache/apk \
     # Networking
     bind-tools netcat-openbsd socat \
     # Terminal
-    tmux \
-    # GNU libc compat (required for glibc-linked binaries like rtk on musl Alpine)
-    gcompat
+    tmux
 
 # Install yq (architecture-aware, version-pinned, checksum-verified)
 RUN if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
@@ -73,21 +71,21 @@ RUN mkdir -p /usr/local/bin && \
     mv /tmp/delta-*/delta /usr/local/bin/ && \
     rm -rf /tmp/delta*
 
-# Install rtk — token-optimized CLI wrappers for LLM agents
-ARG RTK_VERSION=0.22.1
-RUN mkdir -p /usr/local/bin && \
-    if [ "$TARGETARCH" = "x86_64" ] || [ "$TARGETARCH" = "amd64" ]; then \
-        RTK_ARCH="x86_64"; \
-    elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
-        RTK_ARCH="aarch64"; \
-    else \
-        RTK_ARCH="x86_64"; \
-    fi && \
-    wget -q -O /tmp/rtk.tar.gz "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-${RTK_ARCH}-unknown-linux-gnu.tar.gz" && \
-    tar -xzf /tmp/rtk.tar.gz -C /tmp && \
-    find /tmp -name 'rtk' -type f -exec mv {} /usr/local/bin/rtk \; && \
-    chmod +x /usr/local/bin/rtk && \
-    rm -rf /tmp/rtk*
+# Install rtk — token-optimized CLI wrappers (conditional, built from source for musl).
+# Alpine's packaged Rust is too old (edition2024 requires Rust >=1.85), so we use
+# rustup to install the latest stable toolchain, build rtk, then clean up entirely.
+ARG INSTALL_RTK=false
+RUN if [ "$INSTALL_RTK" = "true" ]; then \
+        apk add --no-cache musl-dev gcc && \
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal && \
+        . /root/.cargo/env && \
+        CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+        cargo install --git https://github.com/rtk-ai/rtk --tag v0.22.1 --locked && \
+        cp /root/.cargo/bin/rtk /usr/local/bin/rtk && \
+        chmod +x /usr/local/bin/rtk && \
+        rm -rf /root/.cargo /root/.rustup && \
+        apk del musl-dev gcc; \
+    fi
 
 # Copy entrypoint
 COPY docker-entrypoint /usr/local/bin/docker-entrypoint
